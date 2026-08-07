@@ -26,6 +26,8 @@ The project aims to:
 # Technology Stack
 
 * Python
+* Numpy
+* Matpltlib
 
 Additional libraries will be introduced as the project develops.
 
@@ -100,15 +102,16 @@ Responsibilities include:
 
 ## WaveSolver
 
-Represents the propagation engine.
+Represents the electromagnetic wave propagation engine.
 
 Responsibilities include:
 
-* Computing electromagnetic wave propagation
-* Applying free-space path loss
-* Applying global AWGN noise
-* Combining signals from multiple transmitters
-* Updating the electromagnetic field throughout the simulation space
+* Solving the two-dimensional electromagnetic wave equation.
+* Propagating electromagnetic waves through the simulation space.
+* Applying material-dependent wave propagation speed.
+* Applying material attenuation.
+* Computing wave interactions including superposition, diffraction and propagation.
+* Updating the electromagnetic field throughout the simulation space.
 
 ---
 
