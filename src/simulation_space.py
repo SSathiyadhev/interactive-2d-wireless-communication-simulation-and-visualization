@@ -90,6 +90,29 @@ class SimulationSpace:
             dtype=np.float64,
         )
 
+    # Helper methods
+
+    def _position_to_index(self, x, y):
+        """
+        Converts physical coordinates to grid indices.
+        """
+
+        i = int(round(x / self.dx))
+        j = int(round(y / self.dy))
+
+        return i, j
+
+
+    def _index_to_position(self, i, j):
+        """
+        Converts grid indices to physical coordinates.
+        """
+
+        x = i * self.dx
+        y = j * self.dy
+
+        return x, y
+
     # Public API
 
     def get_field(self, x, y):
@@ -102,7 +125,8 @@ class SimulationSpace:
                 f"Point ({x}, {y}) is outside the simulation space."
             )
 
-        return self._current_field[x, y]
+        i, j = self._position_to_index(x, y)
+        return self._current_field[i, j]
 
     def set_field(self, x, y, value):
         """
@@ -114,7 +138,8 @@ class SimulationSpace:
                 f"Point ({x}, {y}) is outside the simulation space."
             )
 
-        self._current_field[x, y] = value
+        i, j = self._position_to_index(x, y)
+        self._current_field[i, j] = value
 
     def clear(self):
         """
@@ -130,9 +155,9 @@ class SimulationSpace:
         """
 
         return (
-            0 <= x < self.resolution_x
+            0.0 <= x <= self.width
             and
-            0 <= y < self.resolution_y
+            0.0 <= y <= self.height
         )
 
     # Simulation control
@@ -179,7 +204,8 @@ class SimulationSpace:
                 f"Point ({x}, {y}) is outside the simulation space."
             )
 
-        return self._wave_speed[x, y]
+        i, j = self._position_to_index(x, y)
+        return self._wave_speed[i, j]
 
     def set_wave_speed(self, x, y, value):
         """
@@ -191,7 +217,8 @@ class SimulationSpace:
                 f"Point ({x}, {y}) is outside the simulation space."
             )
 
-        self._wave_speed[x, y] = value
+        i, j = self._position_to_index(x, y)
+        self._wave_speed[i, j] = value
 
     def get_attenuation(self, x, y):
         """
@@ -203,7 +230,8 @@ class SimulationSpace:
                 f"Point ({x}, {y}) is outside the simulation space."
             )
 
-        return self._attenuation[x, y]
+        i, j = self._position_to_index(x, y)
+        return self._attenuation[i, j]
 
     def set_attenuation(self, x, y, value):
         """
@@ -214,8 +242,8 @@ class SimulationSpace:
             raise ValueError(
                 f"Point ({x}, {y}) is outside the simulation space."
             )
-
-        self._attenuation[x, y] = value
+        i, j = self._position_to_index(x, y)
+        self._attenuation[i, j] = value
 
     def set_global_wave_speed(self, value):
         """
@@ -250,7 +278,13 @@ class SimulationSpace:
                 "Rectangle is outside the simulation space."
             )
 
-        self._wave_speed[x1:x2+1, y1:y2+1] = value
+        i1, j1 = self._position_to_index(x1, y1)
+        i2, j2 = self._position_to_index(x2, y2)
+
+        self._wave_speed[
+            i1:i2+1,
+            j1:j2+1,
+        ] = value
 
 
     def set_global_attenuation(self, value):
@@ -287,7 +321,13 @@ class SimulationSpace:
                 "Rectangle is outside the simulation space."
             )
 
-        self._attenuation[x1:x2+1, y1:y2+1] = value
+        i1, j1 = self._position_to_index(x1, y1)
+        i2, j2 = self._position_to_index(x2, y2)
+
+        self._attenuation[
+            i1:i2+1,
+            j1:j2+1,
+        ] = value
 
     # WaveSolver interface
 
