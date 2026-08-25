@@ -6,7 +6,7 @@ import numpy as np
 class Transmitter:
     """
     Generates BPSK modulated signals and injects them into SimulationSpace.
-    
+
     """
 
     def __init__(
@@ -455,3 +455,15 @@ class Transmitter:
         """
 
         return self.window_duration
+
+    def get_time_values(self):
+        return list(self.time_values)
+
+    def get_bit_values(self):
+        return list(self.bit_values)
+
+    def get_carrier_values(self):
+        return list(self.carrier_values)
+
+    def get_bpsk_values(self):
+        return list(self.bpsk_values)
