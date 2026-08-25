@@ -8,24 +8,13 @@ from src.transmitter import Transmitter
 
 def main():
 
-    # ---------------------------------------------------------
-    # Simulation Space Configuration
-    # ---------------------------------------------------------
-
-    width = 10.0
-    height = 10.0
-
     resolution_x = 600
     resolution_y = 600
 
-    dx = width / (resolution_x - 1) # Actually Calculated inside the SimulationSpace class here its just for the Courant condition calculation
-    dy = height / (resolution_y - 1) # Actually Calculated inside the SimulationSpace class here its just for the Courant condition calculation
+    dx = 10.0 / (resolution_x - 1)
+    dy = 10.0 / (resolution_y - 1)
 
-    # Speed of light in free space (m/s)
-
-    c = 3.0e8 # Actually set seperatly in global material properties here its just for the Courant condition calculation
-
-    # Stable simulation time step (Courant condition)
+    c = 3.0e8
 
     dt = 0.85 / (
         c * np.sqrt(
@@ -34,85 +23,41 @@ def main():
         )
     )
 
-    # ---------------------------------------------------------
-    # Create Simulation Space
-    # ---------------------------------------------------------
-
     simulation_space = SimulationSpace(
-        width=width,
-        height=height,
+        width=10.0,
+        height=10.0,
         resolution_x=resolution_x,
         resolution_y=resolution_y,
         dt=dt,
     )
 
-    # ---------------------------------------------------------
-    # Global Material Properties
-    # ---------------------------------------------------------
-
     simulation_space.set_global_wave_speed(c)
     simulation_space.set_global_attenuation(0.0)
 
-    # ---------------------------------------------------------
-    # Create Transmitters
-    # ---------------------------------------------------------
-
-    transmitters = [
-
-        Transmitter(
-            simulation_space=simulation_space,
-            x=100,
-            y=250,
-            carrier_frequency=1.0e9,
-            carrier_amplitude=2.0,
-            bit_rate=1.0e6,
-        ),
-
-        Transmitter(
-            simulation_space=simulation_space,
-            x=100,
-            y=300,
-            carrier_frequency=1.0e9,
-            carrier_amplitude=2.0,
-            bit_rate=1.0e6,
-        ),
-
-        Transmitter(
-            simulation_space=simulation_space,
-            x=100,
-            y=350,
-            carrier_frequency=1.0e9,
-            carrier_amplitude=2.0,
-            bit_rate=1.0e6,
-        ),
-
-    ]
-
-    # ---------------------------------------------------------
-    # Create Wave Solver
-    # ---------------------------------------------------------
-
-    wave_solver = WaveSolver(
-        simulation_space,
+    transmitter = Transmitter(
+        simulation_space=simulation_space,
+        x=1.0,
+        y=5.0,
+        carrier_frequency=1.0e9,
+        carrier_amplitude=2.0,
+        bit_rate=500.0e6,
     )
 
-    # ---------------------------------------------------------
-    # Start Simulation
-    # ---------------------------------------------------------
+    wave_solver = WaveSolver(simulation_space)
 
     simulation_space.set_running(True)
 
-    # ---------------------------------------------------------
-    # Create Visualization Window
-    # ---------------------------------------------------------
-
     plt.ion()
 
-    figure, axis = plt.subplots(
-        figsize=(8, 8),
+    figure, axes = plt.subplots(
+        1,
+        2,
+        figsize=(14, 6),
     )
 
-    image = axis.imshow(
+    field_axis = axes[0]
+
+    image = field_axis.imshow(
         simulation_space.get_current_field().T,
         cmap="RdBu_r",
         origin="lower",
@@ -121,19 +66,28 @@ def main():
         vmax=2.0,
     )
 
-    plt.colorbar(image)
+    plt.colorbar(image, ax=field_axis)
 
-    # ---------------------------------------------------------
-    # Simulation Time Display
-    # ---------------------------------------------------------
+    field_axis.set_title("Electromagnetic Field")
+    field_axis.set_xlabel("X")
+    field_axis.set_ylabel("Y")
 
-    time_text = axis.text(
+    waveform_axis = axes[1]
+
+    waveform_line, = waveform_axis.plot([], [])
+
+    waveform_axis.set_title("Transmitter BPSK Waveform")
+    waveform_axis.set_xlabel("Time (ns)")
+    waveform_axis.set_ylabel("Amplitude")
+    waveform_axis.set_ylim(-2.5, 2.5)
+    waveform_axis.set_xlim(0.0, 10.0)
+
+    bit_text = waveform_axis.text(
         0.02,
-        0.98,
+        0.95,
         "",
-        transform=axis.transAxes,
-        fontsize=12,
-        color="black",
+        transform=waveform_axis.transAxes,
+        fontsize=14,
         verticalalignment="top",
         bbox=dict(
             facecolor="white",
@@ -143,50 +97,54 @@ def main():
 
     frame = 0
 
-    # Refresh the visualization every N simulation steps
-
-    display_every = 5
-
-    # ---------------------------------------------------------
-    # Main Simulation Loop
-    # ---------------------------------------------------------
-
     while simulation_space.is_running():
 
-        # Update every transmitter for the current simulation time
-
-        for transmitter in transmitters:
-            transmitter.transmit()
-
-        # Advance the electromagnetic field by one time step
+        transmitter.transmit()
 
         wave_solver.solve()
 
-        # Update the visualization periodically
-
-        if frame % display_every == 0:
+        if frame % 1 == 0:
 
             image.set_data(
                 simulation_space.get_current_field().T
             )
 
-            time_text.set_text(
-                f"Simulation Time : "
-                f"{simulation_space.time * 1e9:.3f} ns"
+            time_values = np.asarray(
+                transmitter.get_time_values()
             )
+
+            bit_values = np.asarray(
+                transmitter.get_bit_values()
+            )
+
+            bpsk_values = np.asarray(
+                transmitter.get_bpsk_values()
+            )
+
+            if len(time_values) > 0:
+
+                waveform_line.set_data(
+                    time_values * 1e9,
+                    bpsk_values,
+                )
+
+                current_time_ns = time_values[-1] * 1e9
+
+                waveform_axis.set_xlim(
+                    max(0.0, current_time_ns - 10.0),
+                    max(10.0, current_time_ns),
+                )
+
+                bit_text.set_text(
+                    f"Current Bit : {bit_values[-1]}"
+                )
 
             figure.canvas.draw_idle()
             figure.canvas.flush_events()
 
-        # Advance the simulation clock
-
         simulation_space.advance_time()
 
         frame += 1
-
-    # ---------------------------------------------------------
-    # Close Interactive Mode
-    # ---------------------------------------------------------
 
     plt.ioff()
     plt.show()
