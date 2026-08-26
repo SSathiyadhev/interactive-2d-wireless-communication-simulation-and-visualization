@@ -1,6 +1,7 @@
 from collections import deque
 import random
 import numpy as np
+from scipy.signal import lfilter
 
 
 class Transmitter:
@@ -83,6 +84,7 @@ class Transmitter:
         self.time_values = deque(maxlen=max_samples)
         self.bit_values = deque(maxlen=max_samples)
         self.carrier_values = deque(maxlen=max_samples)
+        self.shaped_values = deque(maxlen=max_samples)
         self.bpsk_values = deque(maxlen=max_samples)
 
         # ---------------------------------------------------------
@@ -100,6 +102,29 @@ class Transmitter:
 
         # Bit period index of current_bit
         self.last_bit_index = -1
+
+        self._last_symbol_index = -1
+
+        # ---------------------------------------------------------
+        # RRC pulse-shaping parameters
+        # ---------------------------------------------------------
+
+        self.rrc_rolloff = 0.35
+        self.rrc_span = 8
+
+        self._samples_per_symbol = max(
+            1,
+            int(round(
+                (1.0 / self.bit_rate)
+                / self.simulation_space.dt
+            ))
+        )
+
+        self._design_rrc_filter()
+
+        self._rrc_state = np.zeros(
+            len(self._rrc_coefficients) - 1
+        )
 
     # =============================================================
     # BIT GENERATION
@@ -164,6 +189,121 @@ class Transmitter:
 
         return self.current_bit
 
+    def _get_symbol_impulse(self, current_time):
+        """
+        Returns +1 or -1 once at the start of each symbol.
+        Returns 0 for the remaining samples in that symbol.
+        """
+
+        bit_period = 1.0 / self.bit_rate
+
+        current_symbol_index = int(
+            current_time // bit_period
+        )
+
+        if current_symbol_index != self._last_symbol_index:
+
+            self._last_symbol_index = current_symbol_index
+
+            bit = self.get_bit_at_time(current_time)
+
+            return 1.0 if bit == 0 else -1.0
+
+        return 0.0
+
+    def _design_rrc_filter(self):
+        """
+        Generates the Root Raised Cosine filter coefficients.
+        """
+
+        alpha = self.rrc_rolloff
+        sps = self._samples_per_symbol
+        span = self.rrc_span
+
+        number_of_taps = span * sps + 1
+
+        time_values = (
+            np.arange(number_of_taps)
+            - number_of_taps // 2
+        ) / sps
+
+        h = np.zeros_like(time_values, dtype=float)
+
+        for i, t in enumerate(time_values):
+
+            if np.isclose(t, 0.0):
+
+                h[i] = (
+                    1.0
+                    + alpha
+                    * (4.0 / np.pi - 1.0)
+                )
+
+            elif alpha != 0 and np.isclose(
+                abs(t),
+                1.0 / (4.0 * alpha),
+            ):
+
+                h[i] = (
+                    alpha
+                    / np.sqrt(2.0)
+                ) * (
+                    (1.0 + 2.0 / np.pi)
+                    * np.sin(np.pi / (4.0 * alpha))
+                    +
+                    (1.0 - 2.0 / np.pi)
+                    * np.cos(np.pi / (4.0 * alpha))
+                )
+
+            else:
+
+                numerator = (
+                    np.sin(
+                        np.pi * t * (1.0 - alpha)
+                    )
+                    +
+                    4.0
+                    * alpha
+                    * t
+                    * np.cos(
+                        np.pi * t * (1.0 + alpha)
+                    )
+                )
+
+                denominator = (
+                    np.pi
+                    * t
+                    * (
+                        1.0
+                        - (4.0 * alpha * t) ** 2
+                    )
+                )
+
+                h[i] = numerator / denominator
+
+        # Normalize filter peak amplitude
+        h /= np.max(np.abs(h))
+
+        self._rrc_coefficients = h
+
+    def _shape_symbol(self, current_time):
+        """
+        Generates the symbol impulse and applies RRC pulse shaping.
+        """
+
+        symbol_impulse = self._get_symbol_impulse(
+            current_time
+        )
+
+        shaped_value, self._rrc_state = lfilter(
+            self._rrc_coefficients,
+            1.0,
+            [symbol_impulse],
+            zi=self._rrc_state,
+        )
+
+        return float(shaped_value[0])
+
     # =============================================================
     # CARRIER GENERATION
     # =============================================================
@@ -216,17 +356,20 @@ class Transmitter:
             current_time
         )
 
+
         # ---------------------------------------------------------
-        # BPSK mapping
-        #
-        # Bit 0 -> +carrier
-        # Bit 1 -> -carrier
+        # RRC pulse shaping
         # ---------------------------------------------------------
 
-        polarity = 1.0 if bit == 0 else -1.0
+        shaped_value = self._shape_symbol(
+            current_time
+        )
 
-        bpsk = polarity * carrier
+        # ---------------------------------------------------------
+        # Modulate shaped baseband with carrier
+        # ---------------------------------------------------------
 
+        bpsk = shaped_value * carrier
         # ---------------------------------------------------------
         # Store ONE synchronized sample
         # ---------------------------------------------------------
@@ -234,7 +377,9 @@ class Transmitter:
         self.time_values.append(current_time)
         self.bit_values.append(bit)
         self.carrier_values.append(carrier)
+        self.shaped_values.append(shaped_value)
         self.bpsk_values.append(bpsk)
+
 
         # ---------------------------------------------------------
         # deque automatically removes the oldest samples when
@@ -305,6 +450,11 @@ class Transmitter:
         # Reset current-bit state
         self.current_bit = None
         self.last_bit_index = -1
+        self._last_symbol_index = -1
+
+        self._rrc_state = np.zeros(
+            len(self._rrc_coefficients) - 1
+        )
 
     def clear_custom_bit_sequence(self):
         """
@@ -317,6 +467,11 @@ class Transmitter:
         # Reset current-bit state
         self.current_bit = None
         self.last_bit_index = -1
+        self._last_symbol_index = -1
+
+        self._rrc_state = np.zeros(
+            len(self._rrc_coefficients) - 1
+        )
 
     # =============================================================
     # POSITION
@@ -404,6 +559,21 @@ class Transmitter:
         # have changed.
         self.current_bit = None
         self.last_bit_index = -1
+        self._last_symbol_index = -1
+
+        self._samples_per_symbol = max(
+            1,
+            int(round(
+                (1.0 / self.bit_rate)
+                / self.simulation_space.dt
+            ))
+        )
+
+        self._design_rrc_filter()
+
+        self._rrc_state = np.zeros(
+            len(self._rrc_coefficients) - 1
+        )
 
     def get_bit_rate(self):
         """
@@ -447,6 +617,7 @@ class Transmitter:
         self.time_values = deque(maxlen=max_samples)
         self.bit_values = deque(maxlen=max_samples)
         self.carrier_values = deque(maxlen=max_samples)
+        self.shaped_values = deque(maxlen=max_samples)
         self.bpsk_values = deque(maxlen=max_samples)
 
     def get_window_duration(self):
@@ -464,6 +635,9 @@ class Transmitter:
 
     def get_carrier_values(self):
         return list(self.carrier_values)
+
+    def get_shaped_values(self):
+        return list(self.shaped_values)
 
     def get_bpsk_values(self):
         return list(self.bpsk_values)
