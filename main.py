@@ -4,9 +4,14 @@ import matplotlib.pyplot as plt
 from src.simulation_space import SimulationSpace
 from src.wave_solver import WaveSolver
 from src.transmitter import Transmitter
+from src.receiver import Receiver
 
 
 def main():
+
+    # =========================================================
+    # SIMULATION SETTINGS — UNCHANGED
+    # =========================================================
 
     resolution_x = 600
     resolution_y = 600
@@ -16,7 +21,7 @@ def main():
 
     c = 3.0e8
 
-    dt = 0.85 / (
+    dt = 0.75 / (
         c * np.sqrt(
             (1.0 / dx**2) +
             (1.0 / dy**2)
@@ -34,6 +39,10 @@ def main():
     simulation_space.set_global_wave_speed(c)
     simulation_space.set_global_attenuation(0.0)
 
+    # =========================================================
+    # TRANSMITTER — UNCHANGED
+    # =========================================================
+
     transmitter = Transmitter(
         simulation_space=simulation_space,
         x=1.0,
@@ -41,78 +50,65 @@ def main():
         carrier_frequency=1.0e9,
         carrier_amplitude=2.0,
         bit_rate=500.0e6,
+        window_duration=20e-9,
     )
+
+    # =========================================================
+    # RECEIVER — UNCHANGED
+    # =========================================================
+
+    receiver = Receiver(
+        simulation_space=simulation_space,
+        x=2.0,
+        y=5.0,
+        tuned_frequency=1.0e9,
+        bit_rate=500.0e6,
+        observation_window=20e-9,
+    )
+
+    # =========================================================
+    # WAVE SOLVER — UNCHANGED
+    # =========================================================
 
     wave_solver = WaveSolver(simulation_space)
 
     simulation_space.set_running(True)
 
+    # =========================================================
+    # PLOT
+    # =========================================================
+
     plt.ion()
 
-    # =============================================================
-    # FIGURE LAYOUT
-    #
-    # LEFT:
-    #   Electromagnetic field
-    #
-    # RIGHT:
-    #   1. Original square-wave BPSK symbols
-    #   2. RRC-shaped baseband
-    #   3. RRC-BPSK transmitted signal
-    # =============================================================
-
-    figure = plt.figure(
-        figsize=(18, 10)
-    )
-
-    grid = figure.add_gridspec(
-        3,
+    figure, axes = plt.subplots(
+        4,
         2,
-        width_ratios=[1.0, 1.5],
-        hspace=0.45,
+        figsize=(15, 12),
     )
 
-    # =============================================================
-    # 1. ELECTROMAGNETIC FIELD
-    # =============================================================
+    # ---------------------------------------------------------
+    # Transmitter
+    # ---------------------------------------------------------
 
-    field_axis = figure.add_subplot(
-        grid[:, 0]
-    )
+    bit_axis = axes[0, 0]
+    shaped_axis = axes[1, 0]
+    bpsk_axis = axes[2, 0]
 
-    image = field_axis.imshow(
-        simulation_space.get_current_field().T,
-        cmap="RdBu_r",
-        origin="lower",
-        interpolation="nearest",
-        vmin=-2.0,
-        vmax=2.0,
-    )
+    # ---------------------------------------------------------
+    # Receiver
+    # ---------------------------------------------------------
 
-    figure.colorbar(
-        image,
-        ax=field_axis,
-    )
+    received_axis = axes[0, 1]
+    filtered_axis = axes[1, 1]
+    mixed_axis = axes[2, 1]
+    baseband_axis = axes[3, 0]
 
-    field_axis.set_title(
-        "Electromagnetic Field"
-    )
+    # Unused
+    axes[3, 1].axis("off")
 
-    field_axis.set_xlabel(
-        "X"
-    )
-
-    field_axis.set_ylabel(
-        "Y"
-    )
-
-    # =============================================================
-    # 2. ORIGINAL SQUARE-WAVE BPSK SYMBOLS
-    # =============================================================
-
-    bit_axis = figure.add_subplot(
-        grid[0, 1]
-    )
+    # =========================================================
+    # LINES
+    # =========================================================
 
     bit_line, = bit_axis.plot(
         [],
@@ -120,181 +116,194 @@ def main():
         drawstyle="steps-post",
     )
 
-    bit_axis.set_title(
-        "Original BPSK Symbol Sequence"
-    )
-
-    bit_axis.set_xlabel(
-        "Time (ns)"
-    )
-
-    bit_axis.set_ylabel(
-        "Symbol"
-    )
-
-    bit_axis.set_ylim(
-        -1.5,
-        1.5,
-    )
-
-    # =============================================================
-    # 3. RRC SHAPED BASEBAND
-    # =============================================================
-
-    shaped_axis = figure.add_subplot(
-        grid[1, 1]
-    )
-
     shaped_line, = shaped_axis.plot(
         [],
         [],
     )
 
+    bpsk_line, = bpsk_axis.plot(
+        [],
+        [],
+    )
+
+    received_line, = received_axis.plot(
+        [],
+        [],
+    )
+
+    filtered_line, = filtered_axis.plot(
+        [],
+        [],
+    )
+
+    mixed_line, = mixed_axis.plot(
+        [],
+        [],
+    )
+
+    baseband_line, = baseband_axis.plot(
+        [],
+        [],
+    )
+
+    # =========================================================
+    # TITLES
+    # =========================================================
+
+    bit_axis.set_title(
+        "Transmitter — Original BPSK Symbols"
+    )
+
     shaped_axis.set_title(
-        "RRC Shaped Baseband"
+        "Transmitter — RRC Shaped Baseband"
     )
 
-    shaped_axis.set_xlabel(
-        "Time (ns)"
+    bpsk_axis.set_title(
+        "Transmitter — RRC-BPSK"
     )
 
-    shaped_axis.set_ylabel(
-        "Amplitude"
+    received_axis.set_title(
+        "Receiver — Received Signal"
     )
 
-    shaped_axis.set_ylim(
+    filtered_axis.set_title(
+        "Receiver — After Band-Pass Filter"
+    )
+
+    mixed_axis.set_title(
+        "Receiver — After Mixing"
+    )
+
+    baseband_axis.set_title(
+        "Receiver — After RRC Matched Filter"
+    )
+
+    # =========================================================
+    # AXIS SETTINGS
+    # =========================================================
+
+    for axis in axes.flat:
+
+        if axis.axison:
+
+            axis.set_xlabel("Time (ns)")
+            axis.set_ylabel("Amplitude")
+            axis.grid(True)
+
+    # Original symbols are fixed at +1 / -1
+    bit_axis.set_ylim(
         -1.5,
         1.5,
     )
 
-    # =============================================================
-    # 4. RRC-BPSK TRANSMITTED SIGNAL
-    # =============================================================
+    figure.tight_layout()
 
-    waveform_axis = figure.add_subplot(
-        grid[2, 1]
-    )
+    # =========================================================
+    # Y-SCALE HELPER
+    # =========================================================
 
-    bpsk_line, = waveform_axis.plot(
-        [],
-        [],
-    )
+    def autoscale_y(axis, values):
 
-    waveform_axis.set_title(
-        "RRC-BPSK Transmitted Signal"
-    )
+        if len(values) == 0:
+            return
 
-    waveform_axis.set_xlabel(
-        "Time (ns)"
-    )
+        value_min = np.min(values)
+        value_max = np.max(values)
 
-    waveform_axis.set_ylabel(
-        "Amplitude"
-    )
+        if value_min == value_max:
 
-    waveform_axis.set_ylim(
-        -2.5,
-        2.5,
-    )
+            margin = max(
+                abs(value_min) * 0.1,
+                1e-12,
+            )
 
-    bit_text = waveform_axis.text(
-        0.02,
-        0.90,
-        "",
-        transform=waveform_axis.transAxes,
-        fontsize=14,
-        verticalalignment="top",
-        bbox=dict(
-            facecolor="white",
-            alpha=0.8,
-        ),
-    )
+        else:
 
-    # =============================================================
+            margin = 0.1 * (
+                value_max - value_min
+            )
+
+        axis.set_ylim(
+            value_min - margin,
+            value_max + margin,
+        )
+
+    # =========================================================
     # SIMULATION LOOP
-    # =============================================================
+    # =========================================================
 
-    frame = 0
+    frame = 20
 
     while simulation_space.is_running():
 
-        # ---------------------------------------------------------
-        # Transmitter
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Transmit
+        # -----------------------------------------------------
 
         transmitter.transmit()
 
-        # ---------------------------------------------------------
-        # Wave propagation
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Propagate
+        # -----------------------------------------------------
 
         wave_solver.solve()
 
-        # ---------------------------------------------------------
-        # Update plots
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Receive
+        # -----------------------------------------------------
+
+        receiver.receive()
+
+        # =====================================================
+        # UPDATE PLOTS
+        # =====================================================
 
         if frame % 1 == 0:
 
-            # =====================================================
-            # ELECTROMAGNETIC FIELD
-            # =====================================================
+            # =================================================
+            # TRANSMITTER DATA
+            # =================================================
 
-            image.set_data(
-                simulation_space.get_current_field().T
-            )
-
-            # =====================================================
-            # GET TRANSMITTER DATA
-            # =====================================================
-
-            time_values = np.asarray(
+            tx_time = np.asarray(
                 transmitter.get_time_values()
             )
 
-            bit_values = np.asarray(
+            tx_bits = np.asarray(
                 transmitter.get_bit_values()
             )
 
-            shaped_values = np.asarray(
+            tx_shaped = np.asarray(
                 transmitter.get_shaped_values()
             )
 
-            bpsk_values = np.asarray(
+            tx_bpsk = np.asarray(
                 transmitter.get_bpsk_values()
             )
 
-            # =====================================================
-            # WAVEFORMS
-            # =====================================================
+            if len(tx_time) > 0:
 
-            if len(time_values) > 0:
-
-                time_ns = time_values * 1e9
+                tx_time_ns = tx_time * 1e9
 
                 # -------------------------------------------------
-                # Convert:
+                # Convert bits to bipolar BPSK symbols
                 #
                 # bit 0 -> +1
                 # bit 1 -> -1
-                #
-                # This gives the original rectangular BPSK
-                # symbol waveform.
                 # -------------------------------------------------
 
-                symbol_values = np.where(
-                    bit_values == 0,
+                tx_symbols = np.where(
+                    tx_bits == 0,
                     1.0,
                     -1.0,
                 )
 
                 # -------------------------------------------------
-                # Original square-wave BPSK
+                # Original square symbol waveform
                 # -------------------------------------------------
 
                 bit_line.set_data(
-                    time_ns,
-                    symbol_values,
+                    tx_time_ns,
+                    tx_symbols,
                 )
 
                 # -------------------------------------------------
@@ -302,68 +311,198 @@ def main():
                 # -------------------------------------------------
 
                 shaped_line.set_data(
-                    time_ns,
-                    shaped_values,
+                    tx_time_ns,
+                    tx_shaped,
                 )
 
                 # -------------------------------------------------
-                # RRC-BPSK carrier waveform
+                # RRC-BPSK carrier
                 # -------------------------------------------------
 
                 bpsk_line.set_data(
-                    time_ns,
-                    bpsk_values,
+                    tx_time_ns,
+                    tx_bpsk,
                 )
 
-                # =================================================
-                # ROLLING TIME WINDOW
-                # =================================================
+                # -------------------------------------------------
+                # Rolling X axis
+                # -------------------------------------------------
 
-                current_time_ns = time_ns[-1]
+                current_time_ns = tx_time_ns[-1]
 
-                x_min = max(
+                xmin = max(
                     0.0,
-                    current_time_ns - 10.0,
+                    current_time_ns - 20.0,
                 )
 
-                x_max = max(
-                    10.0,
+                xmax = max(
+                    20.0,
                     current_time_ns,
                 )
 
                 bit_axis.set_xlim(
-                    x_min,
-                    x_max,
+                    xmin,
+                    xmax,
                 )
 
                 shaped_axis.set_xlim(
-                    x_min,
-                    x_max,
+                    xmin,
+                    xmax,
                 )
 
-                waveform_axis.set_xlim(
-                    x_min,
-                    x_max,
+                bpsk_axis.set_xlim(
+                    xmin,
+                    xmax,
                 )
 
-                # =================================================
-                # CURRENT BIT
-                # =================================================
+                # -------------------------------------------------
+                # Y scaling
+                # -------------------------------------------------
 
-                bit_text.set_text(
-                    f"Current Bit : {bit_values[-1]}"
+                autoscale_y(
+                    shaped_axis,
+                    tx_shaped,
                 )
 
-            # -----------------------------------------------------
-            # Refresh figure
-            # -----------------------------------------------------
+                autoscale_y(
+                    bpsk_axis,
+                    tx_bpsk,
+                )
+
+            # =================================================
+            # RECEIVER DATA
+            # =================================================
+
+            rx_time = np.asarray(
+                receiver.get_observation_times()
+            )
+
+            received = np.asarray(
+                receiver.get_received_values()
+            )
+
+            filtered = np.asarray(
+                receiver.get_filtered_values()
+            )
+
+            mixed = np.asarray(
+                receiver.get_mixed_values()
+            )
+
+            baseband = np.asarray(
+                receiver.get_baseband_values()
+            )
+
+            if len(rx_time) > 0:
+
+                rx_time_ns = rx_time * 1e9
+
+                # -------------------------------------------------
+                # Received
+                # -------------------------------------------------
+
+                received_line.set_data(
+                    rx_time_ns,
+                    received,
+                )
+
+                # -------------------------------------------------
+                # BPF
+                # -------------------------------------------------
+
+                filtered_line.set_data(
+                    rx_time_ns,
+                    filtered,
+                )
+
+                # -------------------------------------------------
+                # Mixer
+                # -------------------------------------------------
+
+                mixed_line.set_data(
+                    rx_time_ns,
+                    mixed,
+                )
+
+                # -------------------------------------------------
+                # Matched filter
+                # -------------------------------------------------
+
+                baseband_line.set_data(
+                    rx_time_ns,
+                    baseband,
+                )
+
+                # -------------------------------------------------
+                # Rolling X axis
+                # -------------------------------------------------
+
+                current_time_ns = rx_time_ns[-1]
+
+                xmin = max(
+                    0.0,
+                    current_time_ns - 20.0,
+                )
+
+                xmax = max(
+                    20.0,
+                    current_time_ns,
+                )
+
+                received_axis.set_xlim(
+                    xmin,
+                    xmax,
+                )
+
+                filtered_axis.set_xlim(
+                    xmin,
+                    xmax,
+                )
+
+                mixed_axis.set_xlim(
+                    xmin,
+                    xmax,
+                )
+
+                baseband_axis.set_xlim(
+                    xmin,
+                    xmax,
+                )
+
+                # -------------------------------------------------
+                # Y scaling
+                # -------------------------------------------------
+
+                autoscale_y(
+                    received_axis,
+                    received,
+                )
+
+                autoscale_y(
+                    filtered_axis,
+                    filtered,
+                )
+
+                autoscale_y(
+                    mixed_axis,
+                    mixed,
+                )
+
+                autoscale_y(
+                    baseband_axis,
+                    baseband,
+                )
+
+            # =================================================
+            # REDRAW
+            # =================================================
 
             figure.canvas.draw_idle()
             figure.canvas.flush_events()
 
-        # ---------------------------------------------------------
-        # Advance simulation time
-        # ---------------------------------------------------------
+        # =====================================================
+        # ADVANCE ONE DT
+        # =====================================================
 
         simulation_space.advance_time()
 

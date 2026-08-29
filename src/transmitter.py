@@ -282,7 +282,7 @@ class Transmitter:
                 h[i] = numerator / denominator
 
         # Normalize filter peak amplitude
-        h /= np.max(np.abs(h))
+        h /= np.sqrt(np.sum(h ** 2))
 
         self._rrc_coefficients = h
 
