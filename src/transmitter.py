@@ -1,13 +1,23 @@
+"""
+transmitter.py
+
+Defines the Transmitter class.
+
+Generates BPSK modulated signals (via RRC pulse shaping, delegated
+to the shared Filter class) and injects them into SimulationSpace
+using soft-source injection.
+"""
+
 from collections import deque
 import random
 import numpy as np
-from scipy.signal import lfilter
+
+from src.filter import Filter
 
 
 class Transmitter:
     """
     Generates BPSK modulated signals and injects them into SimulationSpace.
-
     """
 
     def __init__(
@@ -20,6 +30,8 @@ class Transmitter:
         bit_rate,
         window_duration=10e-6,
         custom_bit_sequence=None,
+        rrc_rolloff=0.35,
+        rrc_span=8,
         **kwargs,
     ):
         self.simulation_space = simulation_space
@@ -47,7 +59,6 @@ class Transmitter:
         self.Ac = float(carrier_amplitude)
         self.bit_rate = float(bit_rate)
 
-        # Observation window duration in seconds
         self.window_duration = float(window_duration)
 
         if self.window_duration <= 0:
@@ -61,25 +72,18 @@ class Transmitter:
             )
 
         # ---------------------------------------------------------
-        # Calculate maximum number of samples in observation window
+        # Rolling observation buffers (for visualization only --
+        # these are NOT used for any filtering computation; the
+        # RRC Filter below carries its own internal streaming
+        # state independently of these buffers).
         # ---------------------------------------------------------
 
         max_samples = max(
             1,
-            int(
-                round(
-                    self.window_duration
-                    / self.simulation_space.dt
-                )
-            ),
+            int(round(
+                self.window_duration / self.simulation_space.dt
+            )),
         )
-
-        # ---------------------------------------------------------
-        # Rolling observation buffers
-        #
-        # All four deques have the same maxlen so that the samples
-        # remain synchronized.
-        # ---------------------------------------------------------
 
         self.time_values = deque(maxlen=max_samples)
         self.bit_values = deque(maxlen=max_samples)
@@ -97,33 +101,43 @@ class Transmitter:
             else None
         )
 
-        # Current random/custom bit
         self.current_bit = None
-
-        # Bit period index of current_bit
         self.last_bit_index = -1
-
         self._last_symbol_index = -1
 
         # ---------------------------------------------------------
-        # RRC pulse-shaping parameters
+        # Per-symbol ground-truth history (independent of the
+        # per-sample visualization deques above). Sized by number
+        # of SYMBOLS that fit in the window, not simulation steps --
+        # far smaller, since one symbol spans many steps.
         # ---------------------------------------------------------
 
-        self.rrc_rolloff = 0.35
-        self.rrc_span = 8
-
-        self._samples_per_symbol = max(
+        max_symbol_history = max(
             1,
             int(round(
-                (1.0 / self.bit_rate)
-                / self.simulation_space.dt
-            ))
+                self.window_duration * self.bit_rate
+            )),
         )
 
-        self._design_rrc_filter()
+        self._symbol_history = deque(maxlen=max_symbol_history)
+        self._symbol_history_start_index = 0
 
-        self._rrc_state = np.zeros(
-            len(self._rrc_coefficients) - 1
+        # ---------------------------------------------------------
+        # RRC pulse-shaping filter (shared Filter class)
+        # ---------------------------------------------------------
+
+        self.rrc_rolloff = float(rrc_rolloff)
+        self.rrc_span = int(rrc_span)
+
+        self._samples_per_symbol = self._compute_samples_per_symbol()
+
+        self._pulse_filter = Filter(
+            filter_type="rrc",
+            dt=self.simulation_space.dt,
+            rolloff=self.rrc_rolloff,
+            samples_per_symbol=self._samples_per_symbol,
+            span=self.rrc_span,
+            normalize="peak",
         )
 
     # =============================================================
@@ -135,10 +149,8 @@ class Transmitter:
         Returns the bit active at the specified simulation time.
 
         A random bit is generated only when the simulation enters
-        a new bit period.
-
-        Therefore, the same random bit is maintained throughout
-        its complete bit duration.
+        a new bit period. The same random bit is maintained
+        throughout its complete bit duration.
         """
 
         if self.bit_rate <= 0:
@@ -146,26 +158,16 @@ class Transmitter:
                 "Bit rate must be greater than zero."
             )
 
-        # Duration of one bit
         bit_period = 1.0 / self.bit_rate
 
-        # Determine which bit period the current time belongs to
-        current_bit_index = int(
-            current_time // bit_period
-        )
+        current_bit_index = int(current_time // bit_period)
 
-        # Generate/select a new bit only when entering
-        # a new bit period.
         if (
             current_bit_index != self.last_bit_index
             or self.current_bit is None
         ):
 
             self.last_bit_index = current_bit_index
-
-            # -----------------------------------------------------
-            # Custom bit sequence
-            # -----------------------------------------------------
 
             if (
                 self.custom_bit_sequence is not None
@@ -180,12 +182,10 @@ class Transmitter:
                     self.custom_bit_sequence[sequence_index]
                 )
 
-            # -----------------------------------------------------
-            # Random bit
-            # -----------------------------------------------------
-
             else:
                 self.current_bit = random.choice([0, 1])
+
+            self._record_symbol_history(self.current_bit)
 
         return self.current_bit
 
@@ -197,9 +197,7 @@ class Transmitter:
 
         bit_period = 1.0 / self.bit_rate
 
-        current_symbol_index = int(
-            current_time // bit_period
-        )
+        current_symbol_index = int(current_time // bit_period)
 
         if current_symbol_index != self._last_symbol_index:
 
@@ -211,98 +209,15 @@ class Transmitter:
 
         return 0.0
 
-    def _design_rrc_filter(self):
-        """
-        Generates the Root Raised Cosine filter coefficients.
-        """
-
-        alpha = self.rrc_rolloff
-        sps = self._samples_per_symbol
-        span = self.rrc_span
-
-        number_of_taps = span * sps + 1
-
-        time_values = (
-            np.arange(number_of_taps)
-            - number_of_taps // 2
-        ) / sps
-
-        h = np.zeros_like(time_values, dtype=float)
-
-        for i, t in enumerate(time_values):
-
-            if np.isclose(t, 0.0):
-
-                h[i] = (
-                    1.0
-                    + alpha
-                    * (4.0 / np.pi - 1.0)
-                )
-
-            elif alpha != 0 and np.isclose(
-                abs(t),
-                1.0 / (4.0 * alpha),
-            ):
-
-                h[i] = (
-                    alpha
-                    / np.sqrt(2.0)
-                ) * (
-                    (1.0 + 2.0 / np.pi)
-                    * np.sin(np.pi / (4.0 * alpha))
-                    +
-                    (1.0 - 2.0 / np.pi)
-                    * np.cos(np.pi / (4.0 * alpha))
-                )
-
-            else:
-
-                numerator = (
-                    np.sin(
-                        np.pi * t * (1.0 - alpha)
-                    )
-                    +
-                    4.0
-                    * alpha
-                    * t
-                    * np.cos(
-                        np.pi * t * (1.0 + alpha)
-                    )
-                )
-
-                denominator = (
-                    np.pi
-                    * t
-                    * (
-                        1.0
-                        - (4.0 * alpha * t) ** 2
-                    )
-                )
-
-                h[i] = numerator / denominator
-
-        # Normalize filter peak amplitude
-        h /= np.max(np.abs(h))
-
-        self._rrc_coefficients = h
-
     def _shape_symbol(self, current_time):
         """
-        Generates the symbol impulse and applies RRC pulse shaping.
+        Generates the symbol impulse and applies RRC pulse shaping
+        via the shared streaming Filter.
         """
 
-        symbol_impulse = self._get_symbol_impulse(
-            current_time
-        )
+        symbol_impulse = self._get_symbol_impulse(current_time)
 
-        shaped_value, self._rrc_state = lfilter(
-            self._rrc_coefficients,
-            1.0,
-            [symbol_impulse],
-            zi=self._rrc_state,
-        )
-
-        return float(shaped_value[0])
+        return self._pulse_filter.filter(symbol_impulse)
 
     # =============================================================
     # CARRIER GENERATION
@@ -310,20 +225,10 @@ class Transmitter:
 
     def get_current_carrier_value(self, current_time):
         """
-        Calculates the carrier value at the specified time.
-
-            carrier(t) = Ac * cos(2*pi*fc*t)
+        carrier(t) = Ac * cos(2*pi*fc*t)
         """
 
-        return (
-            self.Ac
-            * np.cos(
-                2.0
-                * np.pi
-                * self.fc
-                * current_time
-            )
-        )
+        return self.Ac * np.cos(2.0 * np.pi * self.fc * current_time)
 
     # =============================================================
     # BPSK SIGNAL GENERATION
@@ -332,59 +237,22 @@ class Transmitter:
     def get_current_transmitted_value(self, current_time):
         """
         Calculates the current BPSK signal and records exactly
-        one synchronized observation sample.
-
-        One call produces:
-
-            time[i]
-            bit[i]
-            carrier[i]
-            bpsk[i]
+        one synchronized observation sample (for visualization).
         """
-
-        # ---------------------------------------------------------
-        # Current bit
-        # ---------------------------------------------------------
 
         bit = self.get_bit_at_time(current_time)
 
-        # ---------------------------------------------------------
-        # Current carrier
-        # ---------------------------------------------------------
+        carrier = self.get_current_carrier_value(current_time)
 
-        carrier = self.get_current_carrier_value(
-            current_time
-        )
-
-
-        # ---------------------------------------------------------
-        # RRC pulse shaping
-        # ---------------------------------------------------------
-
-        shaped_value = self._shape_symbol(
-            current_time
-        )
-
-        # ---------------------------------------------------------
-        # Modulate shaped baseband with carrier
-        # ---------------------------------------------------------
+        shaped_value = self._shape_symbol(current_time)
 
         bpsk = shaped_value * carrier
-        # ---------------------------------------------------------
-        # Store ONE synchronized sample
-        # ---------------------------------------------------------
 
         self.time_values.append(current_time)
         self.bit_values.append(bit)
         self.carrier_values.append(carrier)
         self.shaped_values.append(shaped_value)
         self.bpsk_values.append(bpsk)
-
-
-        # ---------------------------------------------------------
-        # deque automatically removes the oldest samples when
-        # maxlen is exceeded.
-        # ---------------------------------------------------------
 
         return bpsk
 
@@ -395,24 +263,34 @@ class Transmitter:
     def transmit(self, current_time=None):
         """
         Generates the current BPSK value and injects it into
-        SimulationSpace.
+        SimulationSpace using SOFT-SOURCE injection: the
+        transmitter's contribution is ADDED to whatever field
+        value already exists at its location, rather than
+        overwriting it.
 
-        The observation sample is already recorded by
-        get_current_transmitted_value(), so this function does
-        not record another sample.
+        This preserves the effect of neighboring cells already
+        computed by the WaveSolver (from other transmitters, or
+        from waves reflecting back toward this location), instead
+        of clamping this grid point to a fixed value every step
+        (which behaves like an unintended Dirichlet boundary and
+        causes non-physical reflections once multiple transmitters
+        or obstacles are present).
         """
 
         if current_time is None:
             current_time = self.simulation_space.time
 
-        voltage = self.get_current_transmitted_value(
-            current_time
+        voltage = self.get_current_transmitted_value(current_time)
+
+        existing_field_value = self.simulation_space.get_field(
+            self.x,
+            self.y,
         )
 
         self.simulation_space.set_field(
             self.x,
             self.y,
-            voltage
+            existing_field_value + voltage,
         )
 
         return voltage
@@ -422,12 +300,6 @@ class Transmitter:
     # =============================================================
 
     def set_custom_bit_sequence(self, bit_sequence):
-        """
-        Sets a custom bit sequence.
-
-        Example:
-            [1, 0, 1, 1, 0]
-        """
 
         if bit_sequence is None:
             self.clear_custom_bit_sequence()
@@ -438,7 +310,6 @@ class Transmitter:
                 "Custom bit sequence cannot be empty."
             )
 
-        # Validate that bits are only 0 or 1
         for bit in bit_sequence:
             if bit not in (0, 1):
                 raise ValueError(
@@ -447,40 +318,43 @@ class Transmitter:
 
         self.custom_bit_sequence = list(bit_sequence)
 
-        # Reset current-bit state
-        self.current_bit = None
-        self.last_bit_index = -1
-        self._last_symbol_index = -1
-
-        self._rrc_state = np.zeros(
-            len(self._rrc_coefficients) - 1
-        )
+        self._reset_bit_state()
 
     def clear_custom_bit_sequence(self):
-        """
-        Removes the custom sequence and switches back to
-        random bit generation.
-        """
 
         self.custom_bit_sequence = None
 
-        # Reset current-bit state
+        self._reset_bit_state()
+
+    def _reset_bit_state(self):
+
         self.current_bit = None
         self.last_bit_index = -1
         self._last_symbol_index = -1
 
-        self._rrc_state = np.zeros(
-            len(self._rrc_coefficients) - 1
-        )
+        self._symbol_history.clear()
+        self._symbol_history_start_index = 0
+
+        self._pulse_filter.reset()
+
+    def _record_symbol_history(self, bit):
+        """
+        Appends `bit` to the per-symbol ground-truth history,
+        keeping `_symbol_history_start_index` in sync with
+        whatever the oldest remaining entry's symbol index is
+        (the deque silently discards the oldest entry once full).
+        """
+
+        if len(self._symbol_history) == self._symbol_history.maxlen:
+            self._symbol_history_start_index += 1
+
+        self._symbol_history.append(bit)
 
     # =============================================================
     # POSITION
     # =============================================================
 
     def set_position(self, x, y):
-        """
-        Changes transmitter position.
-        """
 
         x = float(x)
         y = float(y)
@@ -495,9 +369,6 @@ class Transmitter:
         self.y = y
 
     def get_position(self):
-        """
-        Returns transmitter position.
-        """
 
         return self.x, self.y
 
@@ -506,16 +377,10 @@ class Transmitter:
     # =============================================================
 
     def set_carrier_frequency(self, fc):
-        """
-        Sets carrier frequency.
-        """
 
         self.fc = float(fc)
 
     def get_carrier_frequency(self):
-        """
-        Returns carrier frequency.
-        """
 
         return self.fc
 
@@ -524,16 +389,10 @@ class Transmitter:
     # =============================================================
 
     def set_carrier_amplitude(self, Ac):
-        """
-        Sets carrier amplitude.
-        """
 
         self.Ac = float(Ac)
 
     def get_carrier_amplitude(self):
-        """
-        Returns carrier amplitude.
-        """
 
         return self.Ac
 
@@ -542,9 +401,6 @@ class Transmitter:
     # =============================================================
 
     def set_bit_rate(self, bit_rate):
-        """
-        Sets bit rate.
-        """
 
         bit_rate = float(bit_rate)
 
@@ -555,44 +411,32 @@ class Transmitter:
 
         self.bit_rate = bit_rate
 
-        # Reset current-bit state because the bit periods
-        # have changed.
-        self.current_bit = None
-        self.last_bit_index = -1
-        self._last_symbol_index = -1
+        self._reset_bit_state()
 
-        self._samples_per_symbol = max(
-            1,
-            int(round(
-                (1.0 / self.bit_rate)
-                / self.simulation_space.dt
-            ))
-        )
+        self._samples_per_symbol = self._compute_samples_per_symbol()
 
-        self._design_rrc_filter()
-
-        self._rrc_state = np.zeros(
-            len(self._rrc_coefficients) - 1
+        self._pulse_filter.set_parameters(
+            samples_per_symbol=self._samples_per_symbol,
         )
 
     def get_bit_rate(self):
-        """
-        Returns bit rate.
-        """
 
         return self.bit_rate
+
+    def _compute_samples_per_symbol(self):
+
+        return max(
+            1,
+            int(round(
+                (1.0 / self.bit_rate) / self.simulation_space.dt
+            )),
+        )
 
     # =============================================================
     # OBSERVATION WINDOW
     # =============================================================
 
     def set_window_duration(self, window_duration):
-        """
-        Changes the duration of the rolling observation window.
-
-        The existing observation data is cleared because the
-        buffer size changes.
-        """
 
         window_duration = float(window_duration)
 
@@ -605,15 +449,11 @@ class Transmitter:
 
         max_samples = max(
             1,
-            int(
-                round(
-                    self.window_duration
-                    / self.simulation_space.dt
-                )
-            ),
+            int(round(
+                self.window_duration / self.simulation_space.dt
+            )),
         )
 
-        # Recreate rolling buffers with the new size
         self.time_values = deque(maxlen=max_samples)
         self.bit_values = deque(maxlen=max_samples)
         self.carrier_values = deque(maxlen=max_samples)
@@ -621,9 +461,6 @@ class Transmitter:
         self.bpsk_values = deque(maxlen=max_samples)
 
     def get_window_duration(self):
-        """
-        Returns observation window duration.
-        """
 
         return self.window_duration
 
@@ -641,3 +478,83 @@ class Transmitter:
 
     def get_bpsk_values(self):
         return list(self.bpsk_values)
+
+    # =============================================================
+    # RECEIVER-FACING HELPERS (oracle-style lookups)
+    # =============================================================
+
+    def get_pulse_shaping_group_delay_seconds(self):
+        """
+        Returns the group delay introduced by this transmitter's
+        RRC pulse-shaping filter, in seconds.
+        """
+
+        return (
+            self._pulse_filter.get_group_delay_samples()
+            * self.simulation_space.dt
+        )
+
+    def get_bit_at_recorded_time(self, query_time):
+        """
+        Returns the bit that was ACTUALLY transmitted at
+        `query_time`, read from recorded history.
+
+        This is intentionally different from get_bit_at_time():
+        that method is stateful and advances the bit-generation
+        sequence whenever it sees a new bit-period index -- calling
+        it with an arbitrary past `query_time` would incorrectly
+        generate a brand-new random bit instead of reporting what
+        was really sent, corrupting the transmitter's own sequence.
+
+        This method never mutates state -- it only looks up
+        `query_time` in the rolling observation history. Returns
+        None if `query_time` falls outside the currently recorded
+        window (either because it's too far in the past and has
+        aged out, or hasn't happened yet).
+
+        NOTE: prefer get_bit_by_symbol_index() over this method for
+        BER ground truth. A receiver's correct decision instant for
+        symbol k lands (by construction) essentially exactly on the
+        boundary between bit period k and k+1, so converting that
+        instant back into a time and re-deriving "which bit period
+        is this" is fragile to sub-sample floating-point rounding
+        noise -- it can flip to the wrong side of the boundary. Direct
+        symbol-index counting (see get_bit_by_symbol_index) sidesteps
+        this entirely. This method is kept for cases where a time
+        value -- not a symbol index -- is genuinely what's available.
+        """
+
+        if not self.time_values:
+            return None
+
+        times = np.fromiter(self.time_values, dtype=float)
+
+        if query_time < times[0] or query_time > times[-1]:
+            return None
+
+        index = int(np.searchsorted(times, query_time))
+        index = min(index, len(times) - 1)
+
+        return self.bit_values[index]
+
+    def get_bit_by_symbol_index(self, symbol_index):
+        """
+        Returns the bit actually transmitted during bit period
+        `symbol_index` (0-based, counting bit periods from t=0),
+        read from a dedicated per-symbol history that is immune to
+        the floating-point boundary ambiguity described above.
+
+        Returns None if `symbol_index` is not in the recorded
+        window (too far in the past and aged out, or hasn't
+        occurred yet).
+        """
+
+        if not self._symbol_history:
+            return None
+
+        offset = symbol_index - self._symbol_history_start_index
+
+        if offset < 0 or offset >= len(self._symbol_history):
+            return None
+
+        return self._symbol_history[offset]
