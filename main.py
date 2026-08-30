@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from src.simulation_space import SimulationSpace
 from src.wave_solver import WaveSolver
 from src.transmitter import Transmitter
+from src.receiver import Receiver
 
 
 def main():
@@ -34,13 +35,28 @@ def main():
     simulation_space.set_global_wave_speed(c)
     simulation_space.set_global_attenuation(0.0)
 
+    bit_rate = 500.0e6
+
     transmitter = Transmitter(
         simulation_space=simulation_space,
         x=1.0,
         y=5.0,
         carrier_frequency=1.0e9,
         carrier_amplitude=2.0,
-        bit_rate=500.0e6,
+        bit_rate=bit_rate,
+    )
+
+    # NOTE: transmitter=transmitter is required -- the Receiver uses
+    # it (deliberately, as an oracle simplification -- see
+    # receiver.py's module docstring) for local-oscillator phase
+    # compensation, symbol-timing alignment, and BER ground truth.
+    receiver = Receiver(
+        simulation_space=simulation_space,
+        x=2.0,
+        y=5.0,
+        tuned_frequency=1.0e9,
+        bit_rate=bit_rate,
+        transmitter=transmitter,
     )
 
     wave_solver = WaveSolver(simulation_space)
@@ -55,21 +71,27 @@ def main():
     # LEFT:
     #   Electromagnetic field
     #
-    # RIGHT:
+    # MIDDLE (Transmitter):
     #   1. Original square-wave BPSK symbols
     #   2. RRC-shaped baseband
     #   3. RRC-BPSK transmitted signal
+    #
+    # RIGHT (Receiver):
+    #   1. Received signal
+    #   2. After band-pass filter
+    #   3. After mixing
+    #   4. After RRC matched filter
     # =============================================================
 
     figure = plt.figure(
-        figsize=(18, 10)
+        figsize=(20, 10),
+        constrained_layout=True,
     )
 
     grid = figure.add_gridspec(
+        4,
         3,
-        2,
-        width_ratios=[1.0, 1.5],
-        hspace=0.45,
+        width_ratios=[1.0, 1.5, 1.5],
     )
 
     # =============================================================
@@ -77,7 +99,7 @@ def main():
     # =============================================================
 
     field_axis = figure.add_subplot(
-        grid[:, 0]
+        grid[0:3, 0]
     )
 
     image = field_axis.imshow(
@@ -104,6 +126,31 @@ def main():
 
     field_axis.set_ylabel(
         "Y"
+    )
+
+    # =============================================================
+    # STATUS / BER READOUT (own subplot -- kept out of any graph
+    # so it never overlaps a waveform)
+    # =============================================================
+
+    status_axis = figure.add_subplot(
+        grid[3, 0]
+    )
+
+    status_axis.axis("off")
+
+    ber_text = status_axis.text(
+        0.0,
+        0.9,
+        "",
+        transform=status_axis.transAxes,
+        fontsize=13,
+        verticalalignment="top",
+        family="monospace",
+        bbox=dict(
+            facecolor="white",
+            alpha=0.8,
+        ),
     )
 
     # =============================================================
@@ -211,6 +258,106 @@ def main():
     )
 
     # =============================================================
+    # 5. RECEIVED SIGNAL
+    # =============================================================
+
+    received_axis = figure.add_subplot(
+        grid[0, 2]
+    )
+
+    received_line, = received_axis.plot(
+        [],
+        [],
+    )
+
+    received_axis.set_title(
+        "Receiver — Received Signal"
+    )
+
+    received_axis.set_xlabel(
+        "Time (ns)"
+    )
+
+    received_axis.set_ylabel(
+        "Amplitude"
+    )
+
+    # =============================================================
+    # 6. AFTER BAND-PASS FILTER
+    # =============================================================
+
+    filtered_axis = figure.add_subplot(
+        grid[1, 2]
+    )
+
+    filtered_line, = filtered_axis.plot(
+        [],
+        [],
+    )
+
+    filtered_axis.set_title(
+        "Receiver — After Band-Pass Filter"
+    )
+
+    filtered_axis.set_xlabel(
+        "Time (ns)"
+    )
+
+    filtered_axis.set_ylabel(
+        "Amplitude"
+    )
+
+    # =============================================================
+    # 7. AFTER MIXING
+    # =============================================================
+
+    mixed_axis = figure.add_subplot(
+        grid[2, 2]
+    )
+
+    mixed_line, = mixed_axis.plot(
+        [],
+        [],
+    )
+
+    mixed_axis.set_title(
+        "Receiver — After Mixing"
+    )
+
+    mixed_axis.set_xlabel(
+        "Time (ns)"
+    )
+
+    mixed_axis.set_ylabel(
+        "Amplitude"
+    )
+
+    # =============================================================
+    # 8. AFTER RRC MATCHED FILTER
+    # =============================================================
+
+    baseband_axis = figure.add_subplot(
+        grid[3, 2]
+    )
+
+    baseband_line, = baseband_axis.plot(
+        [],
+        [],
+    )
+
+    baseband_axis.set_title(
+        "Receiver — After RRC Matched Filter"
+    )
+
+    baseband_axis.set_xlabel(
+        "Time (ns)"
+    )
+
+    baseband_axis.set_ylabel(
+        "Amplitude"
+    )
+
+    # =============================================================
     # SIMULATION LOOP
     # =============================================================
 
@@ -229,6 +376,12 @@ def main():
         # ---------------------------------------------------------
 
         wave_solver.solve()
+
+        # ---------------------------------------------------------
+        # Receiver
+        # ---------------------------------------------------------
+
+        receiver.receive()
 
         # ---------------------------------------------------------
         # Update plots
@@ -352,6 +505,163 @@ def main():
 
                 bit_text.set_text(
                     f"Current Bit : {bit_values[-1]}"
+                )
+
+            # =====================================================
+            # GET RECEIVER DATA
+            # =====================================================
+
+            rx_time_values = np.asarray(
+                receiver.get_observation_times()
+            )
+
+            received_values = np.asarray(
+                receiver.get_received_values()
+            )
+
+            filtered_values = np.asarray(
+                receiver.get_filtered_values()
+            )
+
+            mixed_values = np.asarray(
+                receiver.get_mixed_values()
+            )
+
+            baseband_values = np.asarray(
+                receiver.get_baseband_values()
+            )
+
+            # =====================================================
+            # RECEIVER WAVEFORMS
+            # =====================================================
+
+            if len(rx_time_values) > 0:
+
+                rx_time_ns = rx_time_values * 1e9
+
+                # -------------------------------------------------
+                # Received signal
+                # -------------------------------------------------
+
+                received_line.set_data(
+                    rx_time_ns,
+                    received_values,
+                )
+
+                # -------------------------------------------------
+                # After band-pass filter
+                # -------------------------------------------------
+
+                filtered_line.set_data(
+                    rx_time_ns,
+                    filtered_values,
+                )
+
+                # -------------------------------------------------
+                # After mixing
+                # -------------------------------------------------
+
+                mixed_line.set_data(
+                    rx_time_ns,
+                    mixed_values,
+                )
+
+                # -------------------------------------------------
+                # After RRC matched filter
+                # -------------------------------------------------
+
+                baseband_line.set_data(
+                    rx_time_ns,
+                    baseband_values,
+                )
+
+                # =================================================
+                # ROLLING TIME WINDOW (RECEIVER)
+                # =================================================
+
+                rx_current_time_ns = rx_time_ns[-1]
+
+                rx_x_min = max(
+                    0.0,
+                    rx_current_time_ns - 10.0,
+                )
+
+                rx_x_max = max(
+                    10.0,
+                    rx_current_time_ns,
+                )
+
+                received_axis.set_xlim(
+                    rx_x_min,
+                    rx_x_max,
+                )
+
+                filtered_axis.set_xlim(
+                    rx_x_min,
+                    rx_x_max,
+                )
+
+                mixed_axis.set_xlim(
+                    rx_x_min,
+                    rx_x_max,
+                )
+
+                baseband_axis.set_xlim(
+                    rx_x_min,
+                    rx_x_max,
+                )
+
+                # =================================================
+                # Y-AXIS AUTOSCALE (RECEIVER)
+                #
+                # Unlike the transmitter panels, receiver signal
+                # magnitudes depend on distance/filters and aren't
+                # fixed ahead of time -- rescale to whatever the
+                # data actually spans.
+                # =================================================
+
+                for axis, values in (
+                    (received_axis, received_values),
+                    (filtered_axis, filtered_values),
+                    (mixed_axis, mixed_values),
+                    (baseband_axis, baseband_values),
+                ):
+
+                    if len(values) == 0:
+                        continue
+
+                    value_min = np.min(values)
+                    value_max = np.max(values)
+
+                    if value_min == value_max:
+                        margin = max(abs(value_min) * 0.1, 1e-12)
+                    else:
+                        margin = 0.1 * (value_max - value_min)
+
+                    axis.set_ylim(
+                        value_min - margin,
+                        value_max + margin,
+                    )
+
+                # =================================================
+                # BIT ERROR RATE
+                # =================================================
+
+                bit_error_rate = receiver.get_bit_error_rate()
+
+                ber_display = (
+                    f"{bit_error_rate:.4f}"
+                    if bit_error_rate is not None
+                    else "n/a"
+                )
+
+                ber_text.set_text(
+                    f"t = {simulation_space.time * 1e9:.2f} ns\n"
+                    f"Bits Compared : {receiver.get_total_bits_compared()}\n"
+                    f"Bit Errors    : {receiver.get_bit_errors()}\n"
+                    f"BER           : {ber_display}\n"
+                    f"Est. Delay    : "
+                    f"{receiver.get_estimated_total_delay_seconds()*1e9:.2f} ns"
                 )
 
             # -----------------------------------------------------
