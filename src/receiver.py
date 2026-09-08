@@ -1,7 +1,7 @@
 from collections import deque
 import numpy as np
 
-from scipy.signal import butter, sosfilt, lfilter
+from src.filter import Filter
 
 
 class Receiver:
@@ -14,6 +14,8 @@ class Receiver:
         tuned_frequency,      # Carrier frequency to receive
         bit_rate,             # Transmitted bit rate in bits/second
         observation_window,   # Duration of stored observation data
+        rrc_rolloff=0.35,
+        rrc_span=8,
     ):
         self.simulation_space = simulation_space
         self.x = float(x)
@@ -37,30 +39,18 @@ class Receiver:
         self.demodulated_bits = deque(maxlen=max_samples)
         self.baseband_values = deque(maxlen=max_samples)
 
-        # Digital sampling frequency
-        self._sample_frequency = 1.0 / self.simulation_space.dt
-
-        # BPSK band-pass limits
-        f_low = self.tuned_frequency - self.bit_rate
-        f_high = self.tuned_frequency + self.bit_rate
-
-        # 4th-order Butterworth band-pass filter
-        self.filter = butter(
-            4,
-            [f_low, f_high],
-            btype="bandpass",
-            fs=self._sample_frequency,
-            output="sos",
+        self.bandpass_filter = Filter(
+            "butterworth",
+            self.simulation_space.dt,
+            order=4,
+            filter_response="bandpass",
+            low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
+            high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
         )
 
-        # Internal IIR filter state
-        self._filter_state = np.zeros(
-            (self.filter.shape[0], 2)
-        )
 
-        # RRC matched-filter parameters
-        self.rrc_rolloff = 0.35
-        self.rrc_span = 8
+        self.rrc_rolloff = rrc_rolloff
+        self.rrc_span = rrc_span
 
         self._samples_per_symbol = max(
             1,
@@ -70,10 +60,13 @@ class Receiver:
             ))
         )
 
-        self._design_rrc_filter()
-
-        self._rrc_state = np.zeros(
-            len(self._rrc_coefficients) - 1
+        self.matched_filter = Filter(
+            "rrc",
+            self.simulation_space.dt,
+            rolloff=self.rrc_rolloff,
+            samples_per_symbol=self._samples_per_symbol,
+            span=self.rrc_span,
+            normalize="energy",
         )
 
     def _sample_field(self):
@@ -96,16 +89,12 @@ class Receiver:
 
     def _filter_signal(self, received_value):
         """
-        Filters the current received sample and stores the result.
+        Applies the receiver band-pass filter.
         """
 
-        filtered_value, self._filter_state = sosfilt(
-            self.filter,
-            [received_value],
-            zi=self._filter_state,
+        filtered_value = self.bandpass_filter.filter(
+            received_value
         )
-
-        filtered_value = float(filtered_value[0])
 
         self.filtered_values.append(filtered_value)
 
@@ -129,94 +118,14 @@ class Receiver:
 
         return mixed_value
 
-
-    def _design_rrc_filter(self):
-        """
-        Generates the RRC matched-filter coefficients.
-        """
-
-        alpha = self.rrc_rolloff
-        sps = self._samples_per_symbol
-        span = self.rrc_span
-
-        number_of_taps = span * sps + 1
-
-        time_values = (
-            np.arange(number_of_taps)
-            - number_of_taps // 2
-        ) / sps
-
-        h = np.zeros_like(time_values, dtype=float)
-
-        for i, t in enumerate(time_values):
-
-            if np.isclose(t, 0.0):
-
-                h[i] = (
-                    1.0
-                    + alpha
-                    * (4.0 / np.pi - 1.0)
-                )
-
-            elif alpha != 0 and np.isclose(
-                abs(t),
-                1.0 / (4.0 * alpha),
-            ):
-
-                h[i] = (
-                    alpha
-                    / np.sqrt(2.0)
-                ) * (
-                    (1.0 + 2.0 / np.pi)
-                    * np.sin(np.pi / (4.0 * alpha))
-                    +
-                    (1.0 - 2.0 / np.pi)
-                    * np.cos(np.pi / (4.0 * alpha))
-                )
-
-            else:
-
-                numerator = (
-                    np.sin(
-                        np.pi * t * (1.0 - alpha)
-                    )
-                    +
-                    4.0
-                    * alpha
-                    * t
-                    * np.cos(
-                        np.pi * t * (1.0 + alpha)
-                    )
-                )
-
-                denominator = (
-                    np.pi
-                    * t
-                    * (
-                        1.0
-                        - (4.0 * alpha * t) ** 2
-                    )
-                )
-
-                h[i] = numerator / denominator
-
-        h /= np.sqrt(np.sum(h ** 2))
-
-        self._rrc_coefficients = h
-
     def _matched_filter(self, mixed_value):
         """
         Applies the RRC matched filter to the mixed signal.
         """
 
-        baseband_value, self._rrc_state = lfilter(
-            self._rrc_coefficients,
-            1.0,
-            [mixed_value],
-            zi=self._rrc_state,
+        baseband_value = self.matched_filter.filter(
+            mixed_value
         )
-
-        baseband_value = float(baseband_value[0])
 
         self.baseband_values.append(baseband_value)
 
@@ -246,29 +155,18 @@ class Receiver:
 
     def _design_filter(self):
         """
-        Recalculates the band-pass filter.
+        Recalculates the receiver band-pass filter.
         """
 
-        f_low = (
-            self.tuned_frequency
-            - self.bit_rate
-        )
-
-        f_high = (
-            self.tuned_frequency
-            + self.bit_rate
-        )
-
-        self.filter = butter(
-            4,
-            [f_low, f_high],
-            btype="bandpass",
-            fs=self._sample_frequency,
-            output="sos",
-        )
-
-        self._filter_state = np.zeros(
-            (self.filter.shape[0], 2)
+        self.bandpass_filter.set_parameters(
+            order=4,
+            filter_response="bandpass",
+            low_cutoff_frequency=(
+                self.tuned_frequency - self.bit_rate
+            ),
+            high_cutoff_frequency=(
+                self.tuned_frequency + self.bit_rate
+            ),
         )
 
     def set_position(self, x, y):
@@ -310,8 +208,8 @@ class Receiver:
         """
 
         self.bit_rate = float(value)
-
         self._design_filter()
+
         self._samples_per_symbol = max(
             1,
             int(round(
@@ -320,10 +218,11 @@ class Receiver:
             ))
         )
 
-        self._design_rrc_filter()
-
-        self._rrc_state = np.zeros(
-            len(self._rrc_coefficients) - 1
+        self.matched_filter.set_parameters(
+            rolloff=self.rrc_rolloff,
+            samples_per_symbol=self._samples_per_symbol,
+            span=self.rrc_span,
+            normalize="energy",
         )
 
     def get_bit_rate(self):
