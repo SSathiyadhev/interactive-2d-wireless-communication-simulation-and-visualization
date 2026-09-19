@@ -2,6 +2,7 @@ from collections import deque
 import numpy as np
 
 from src.filter import Filter
+from src.costas_loop import CostasLoop
 
 
 class Receiver:
@@ -69,6 +70,13 @@ class Receiver:
             normalize="energy",
         )
 
+        self.costas_loop = CostasLoop(
+            dt=self.simulation_space.dt,
+            carrier_frequency=self.tuned_frequency,
+            bit_rate=self.bit_rate,
+            rrc_rolloff=self.rrc_rolloff,
+        )
+
     def _sample_field(self):
         """
         Reads and stores the current field value at the
@@ -100,23 +108,6 @@ class Receiver:
 
         return filtered_value
 
-    def _mix_signal(self, filtered_value):
-        """
-        Mixes the filtered signal with the local carrier
-        and stores the mixed sample.
-        """
-
-        t = self.simulation_space.time
-
-        local_carrier = np.cos(
-            2.0 * np.pi * self.tuned_frequency * t
-        )
-
-        mixed_value = filtered_value * local_carrier
-
-        self.mixed_values.append(mixed_value)
-
-        return mixed_value
 
     def _matched_filter(self, mixed_value):
         """
@@ -144,10 +135,15 @@ class Receiver:
             received_value
         )
 
-        # 3. Mix with the local carrier.
-        mixed_value = self._mix_signal(
-            filtered_value
+        # 3. Carrier recovery and mixing.
+        mixed_value, phase = self.costas_loop.process(
+            filtered_value,
+            self.simulation_space.time,
         )
+
+        # Store mixed signal for visualization.
+        self.mixed_values.append(mixed_value)
+
         # 4. Apply the RRC matched filter.
         baseband_value = self._matched_filter(
             mixed_value
@@ -283,4 +279,3 @@ class Receiver:
         """
 
         return list(self.time_values)
-

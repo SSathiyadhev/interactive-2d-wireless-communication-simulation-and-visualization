@@ -59,8 +59,8 @@ def main():
 
     receiver = Receiver(
         simulation_space=simulation_space,
-        x=2.0,
-        y=5.0,
+        x=1.769616027,
+        y=1.602671119,
         tuned_frequency=1.0e9,
         bit_rate=500.0e6,
         observation_window=20e-9,
@@ -232,7 +232,7 @@ def main():
     # SIMULATION LOOP
     # =========================================================
 
-    frame = 20
+    frame = 50
 
     while simulation_space.is_running():
 
