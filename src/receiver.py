@@ -1,283 +1,209 @@
 """
 src/receiver.py
 
-Defines the Receiver class.
-
-Performs coherent BPSK demodulation: band-pass filtering, carrier
-mixing, RRC matched filtering, and symbol-timing-aligned bit decisions.
-Bit comparison and BER metrics are delegated to LinkEvaluator.
+Defines the Receiver class using a Costas loop for blind carrier phase tracking.
+Demodulated bits are sliced at symbol intervals and exposed to LinkEvaluator.
 """
 
 from collections import deque
 import numpy as np
 
 from src.filter import Filter
+from src.costas_loop import CostasLoop
 
 
 class Receiver:
-    """
-    Coherent BPSK receiver: band-pass filter, carrier mixing, RRC
-    matched filter, and symbol-timing-aligned bit decisions.
-    """
 
     def __init__(
         self,
-        simulation_space,
-        x,
-        y,
-        tuned_frequency,
-        bit_rate,
-        observation_window=10e-9,
+        simulation_space,     # SimulationSpace used by the receiver
+        x,                    # Receiver physical x-coordinate
+        y,                    # Receiver physical y-coordinate
+        tuned_frequency,      # Carrier frequency to receive
+        bit_rate,             # Transmitted bit rate in bits/second
+        observation_window=10e-9,  # Duration of stored observation data
         rrc_rolloff=0.35,
         rrc_span=8,
-        bandpass_order=4,
         **kwargs,
     ):
         self.simulation_space = simulation_space
-
         self.x = float(x)
         self.y = float(y)
-
-        if not self.simulation_space.is_inside(self.x, self.y):
-            raise ValueError(
-                f"Receiver position ({self.x} m, {self.y} m) "
-                f"is outside the simulation space "
-                f"(0..{self.simulation_space.width} m, "
-                f"0..{self.simulation_space.height} m)."
-            )
-
         self.tuned_frequency = float(tuned_frequency)
         self.bit_rate = float(bit_rate)
         self.observation_window = float(observation_window)
 
+        if not self.simulation_space.is_inside(self.x, self.y):
+            raise ValueError(
+                f"Receiver position ({self.x} m, {self.y} m) "
+                f"is outside simulation space."
+            )
+
         if self.bit_rate <= 0:
             raise ValueError("Bit rate must be greater than zero.")
 
-        # ---------------------------------------------------------
-        # Rolling observation buffers (for UI oscilloscope only)
-        # ---------------------------------------------------------
+        # Number of simulation samples that fit in the observation window
         max_samples = max(
             1,
-            int(round(self.observation_window / self.simulation_space.dt)),
+            int(np.ceil(self.observation_window / self.simulation_space.dt)),
         )
 
+        # Rolling sample-rate buffers (for oscilloscope UI visualization)
         self.time_values = deque(maxlen=max_samples)
         self.received_values = deque(maxlen=max_samples)
         self.filtered_values = deque(maxlen=max_samples)
         self.mixed_values = deque(maxlen=max_samples)
         self.baseband_values = deque(maxlen=max_samples)
 
-        # Append-only stream of demodulated bits for LinkEvaluator
+        # Unbounded append-only stream of decoded bits for LinkEvaluator
         self.demodulated_bits = []
 
-        # ---------------------------------------------------------
-        # Band-pass filter (shared Filter class)
-        # ---------------------------------------------------------
-        self.bandpass_order = int(bandpass_order)
-
-        self._bandpass_filter = Filter(
-            filter_type="butterworth",
-            dt=self.simulation_space.dt,
-            order=self.bandpass_order,
+        # Front-end RF Band-pass filter
+        self.bandpass_filter = Filter(
+            "butterworth",
+            self.simulation_space.dt,
+            order=4,
             filter_response="bandpass",
             low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
             high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
         )
 
-        # ---------------------------------------------------------
-        # RRC matched filter (shared Filter class, energy-normalized)
-        # ---------------------------------------------------------
         self.rrc_rolloff = float(rrc_rolloff)
         self.rrc_span = int(rrc_span)
 
-        self._samples_per_symbol = self._compute_samples_per_symbol()
+        self._samples_per_symbol = max(
+            1,
+            int(round((1.0 / self.bit_rate) / self.simulation_space.dt)),
+        )
 
-        self._matched_filter = Filter(
-            filter_type="rrc",
-            dt=self.simulation_space.dt,
+        # RRC matched baseband filter
+        self.matched_filter = Filter(
+            "rrc",
+            self.simulation_space.dt,
             rolloff=self.rrc_rolloff,
             samples_per_symbol=self._samples_per_symbol,
             span=self.rrc_span,
             normalize="energy",
         )
 
-        # ---------------------------------------------------------
-        # Timing state
-        # ---------------------------------------------------------
+        # Costas Loop for carrier phase tracking
+        self.costas_loop = CostasLoop(
+            dt=self.simulation_space.dt,
+            carrier_frequency=self.tuned_frequency,
+            bit_rate=self.bit_rate,
+            rrc_rolloff=self.rrc_rolloff,
+        )
+
+        # Timing alignment state for symbol slicing
         self._propagation_delay_seconds = 0.0
-        self._total_delay_seconds = 0.0
-        self._total_delay_samples = 0
-
         self._update_internal_filter_delays()
-
-    # =============================================================
-    # DELAY / TIMING CALCULATION
-    # =============================================================
 
     def _update_internal_filter_delays(self):
         """
-        Calculates group delay of the full pipeline:
-        Transmitter pulse-shaping delay (span/2 symbols)
-        + Bandpass group delay
-        + Matched filter group delay (span/2 symbols)
+        Total RRC matched filter group delay is 8 symbol periods (16 ns):
+        4 symbols at TX (pulse shaping) + 4 symbols at RX (matched filter).
         """
-        rx_bandpass_group_delay = (
-            self._bandpass_filter.get_group_delay_samples(
-                frequency=self.tuned_frequency,
-            )
-            * self.simulation_space.dt
-        )
+        # 8 symbols of RRC filter delay
+        rrc_pipeline_delay = float(self.rrc_span) * (1.0 / self.bit_rate)
 
-        rx_matched_group_delay = (
-            self._matched_filter.get_group_delay_samples()
-            * self.simulation_space.dt
-        )
-
-        # TX pulse shaping filter delay = (span / 2) * Ts
-        tx_shaping_group_delay = (self.rrc_span / 2.0) * (1.0 / self.bit_rate)
-
-        self._filter_delay_seconds = (
-            tx_shaping_group_delay + rx_bandpass_group_delay + rx_matched_group_delay
-        )
-        self._total_delay_seconds = self._propagation_delay_seconds + self._filter_delay_seconds
+        self._total_delay_seconds = self._propagation_delay_seconds + rrc_pipeline_delay
         self._total_delay_samples = int(round(self._total_delay_seconds / self.simulation_space.dt))
-
     def set_estimated_propagation_delay(self, prop_delay_seconds):
-        """Hook for LinkEvaluator or runtime to pass physical propagation delay."""
+        """Allows LinkEvaluator to pass channel delay for symbol-clock alignment."""
         self._propagation_delay_seconds = float(prop_delay_seconds)
         self._update_internal_filter_delays()
-
-    # =============================================================
-    # PIPELINE STAGES
-    # =============================================================
 
     def _sample_field(self):
         t = self.simulation_space.time
         received_value = self.simulation_space.get_field(self.x, self.y)
-
         self.time_values.append(t)
         self.received_values.append(received_value)
-
         return t, received_value
 
     def _filter_signal(self, received_value):
-        filtered_value = self._bandpass_filter.filter(received_value)
+        filtered_value = self.bandpass_filter.filter(received_value)
         self.filtered_values.append(filtered_value)
         return filtered_value
 
-    def _mix_signal(self, filtered_value, current_time):
-        compensated_time = current_time - self._propagation_delay_seconds
-
-        local_carrier = np.cos(
-            2.0 * np.pi * self.tuned_frequency * compensated_time
-        )
-
-        mixed_value = 2.0 * filtered_value * local_carrier
-        self.mixed_values.append(mixed_value)
-        return mixed_value
-
     def _matched_filter_stage(self, mixed_value):
-        baseband_value = self._matched_filter.filter(mixed_value)
+        baseband_value = self.matched_filter.filter(mixed_value)
         self.baseband_values.append(baseband_value)
         return baseband_value
 
-    # =============================================================
-    # MAIN ENTRY POINT
-    # =============================================================
-
-    def receive(self):
-        """
-        Processes one simulation timestep: sampling, filtering,
-        mixing, matched filtering, and bit slicing at symbol intervals.
-        """
-        current_time, received_value = self._sample_field()
-        filtered_value = self._filter_signal(received_value)
-        mixed_value = self._mix_signal(filtered_value, current_time)
-        baseband_value = self._matched_filter_stage(mixed_value)
-
-        if self._is_symbol_sampling_instant(current_time):
-            self._decide_bit(baseband_value)
-
     def _is_symbol_sampling_instant(self, current_time):
         step_index = int(round(current_time / self.simulation_space.dt))
-
         if step_index < self._total_delay_samples:
             return False
-
         offset = step_index - self._total_delay_samples
         return (offset % self._samples_per_symbol) == 0
 
     def _decide_bit(self, baseband_value):
         """
-        Thresholds matched filter output sample (>= 0 -> bit 0, < 0 -> bit 1)
-        and logs the recovered bit.
+        Thresholds matched filter output.
+        Flipped to account for 180-degree carrier phase / coordinate sign inversion.
         """
-        decoded_bit = 0 if baseband_value >= 0.0 else 1
+        decoded_bit = 1 if baseband_value >= 0.0 else 0
         self.demodulated_bits.append(decoded_bit)
 
-    # =============================================================
-    # CONFIGURATION & REPOSITIONING
-    # =============================================================
+    def receive(self):
+        """Processes one simulation timestep."""
+        current_time, received_value = self._sample_field()
+        filtered_value = self._filter_signal(received_value)
+
+        # Costas Loop performs carrier downconversion
+        mixed_value, _ = self.costas_loop.process(filtered_value, current_time)
+        self.mixed_values.append(mixed_value)
+
+        # Matched filter
+        baseband_value = self._matched_filter_stage(mixed_value)
+
+        # Slice bits at symbol peaks
+        if self._is_symbol_sampling_instant(current_time):
+            self._decide_bit(baseband_value)
+
+    def _design_filter(self):
+        self.bandpass_filter.set_parameters(
+            order=4,
+            filter_response="bandpass",
+            low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
+            high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
+        )
+        self._update_internal_filter_delays()
 
     def set_position(self, x, y):
-        x = float(x)
-        y = float(y)
-
-        if not self.simulation_space.is_inside(x, y):
-            raise ValueError(f"Point ({x}, {y}) is outside the simulation space.")
-
-        self.x = x
-        self.y = y
+        self.x = float(x)
+        self.y = float(y)
 
     def get_position(self):
         return self.x, self.y
 
     def set_tuned_frequency(self, value):
         self.tuned_frequency = float(value)
-
-        self._bandpass_filter.set_parameters(
-            low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
-            high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
-        )
-
-        self._update_internal_filter_delays()
+        self._design_filter()
 
     def get_tuned_frequency(self):
         return self.tuned_frequency
 
     def set_bit_rate(self, value):
         self.bit_rate = float(value)
-
-        self._bandpass_filter.set_parameters(
-            low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
-            high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
+        self._design_filter()
+        self._samples_per_symbol = max(
+            1,
+            int(round((1.0 / self.bit_rate) / self.simulation_space.dt)),
         )
-
-        self._samples_per_symbol = self._compute_samples_per_symbol()
-
-        self._matched_filter.set_parameters(
+        self.matched_filter.set_parameters(
+            rolloff=self.rrc_rolloff,
             samples_per_symbol=self._samples_per_symbol,
+            span=self.rrc_span,
+            normalize="energy",
         )
-
         self._update_internal_filter_delays()
 
     def get_bit_rate(self):
         return self.bit_rate
 
-    def _compute_samples_per_symbol(self):
-        return max(
-            1,
-            int(round((1.0 / self.bit_rate) / self.simulation_space.dt)),
-        )
-
-    # =============================================================
-    # VISUALIZATION & TELEMETRY ACCESSORS
-    # =============================================================
-
     def get_current_received_value(self):
-        if not self.received_values:
-            return None
-        return self.received_values[-1]
+        return self.received_values[-1] if self.received_values else None
 
     def get_received_values(self):
         return list(self.received_values)
@@ -288,17 +214,14 @@ class Receiver:
     def get_mixed_values(self):
         return list(self.mixed_values)
 
-    def get_baseband_values(self):
-        return list(self.baseband_values)
-
     def get_demodulated_bits(self):
         return self.demodulated_bits
+
+    def get_baseband_values(self):
+        return list(self.baseband_values)
 
     def get_observation_times(self):
         return list(self.time_values)
 
     def get_estimated_total_delay_seconds(self):
         return self._total_delay_seconds
-
-    def get_estimated_propagation_delay_seconds(self):
-        return self._propagation_delay_seconds
