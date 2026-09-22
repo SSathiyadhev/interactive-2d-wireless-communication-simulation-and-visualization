@@ -29,6 +29,7 @@ class Transmitter:
         carrier_amplitude,
         bit_rate,
         window_duration=10e-6,
+        fft_window=30e-9,
         custom_bit_sequence=None,
         rrc_rolloff=0.35,
         rrc_span=8,
@@ -58,6 +59,11 @@ class Transmitter:
         self.bit_rate = float(bit_rate)
         self.window_duration = float(window_duration)
 
+        self.fft_window = float(fft_window)
+
+        if self.fft_window <= 0:
+            raise ValueError("FFT window must be strictly positive.")
+
         if self.window_duration <= 0:
             raise ValueError("Observation window duration must be greater than zero.")
 
@@ -77,6 +83,15 @@ class Transmitter:
         self.carrier_values = deque(maxlen=max_samples)
         self.shaped_values = deque(maxlen=max_samples)
         self.bpsk_values = deque(maxlen=max_samples)
+
+        fft_samples = max(
+            8,
+            int(np.ceil(
+                self.fft_window / self.simulation_space.dt
+            )),
+        )
+
+        self.bpsk_fft_values = deque(maxlen=fft_samples)
 
         # ---------------------------------------------------------
         # Bit generation state & Ground-Truth Reference
@@ -175,6 +190,8 @@ class Transmitter:
         self.carrier_values.append(carrier)
         self.shaped_values.append(shaped_value)
         self.bpsk_values.append(bpsk)
+
+        self.bpsk_fft_values.append(bpsk)
 
         return bpsk
 
@@ -313,6 +330,37 @@ class Transmitter:
     def get_window_duration(self):
         return self.window_duration
 
+
+    def compute_bpsk_fft(self):
+        """
+        Computes the FFT of the transmitted RRC-shaped BPSK RF waveform.
+        """
+
+        samples = np.asarray(
+            self.bpsk_fft_values,
+            dtype=np.float64,
+        )
+
+        if len(samples) < 8:
+            return np.array([]), np.array([])
+
+        n = len(samples)
+
+        fft_values = np.fft.rfft(samples)
+
+        frequencies = np.fft.rfftfreq(
+            n,
+            d=self.simulation_space.dt,
+        )
+
+        amplitudes = (
+            2.0 * np.abs(fft_values) / n
+        )
+
+        amplitudes[0] /= 2.0
+
+        return frequencies, amplitudes
+
     # =============================================================
     # BUFFER ACCESSORS (for UI Oscilloscope & LinkEvaluator)
     # =============================================================
@@ -335,3 +383,6 @@ class Transmitter:
     def get_generated_bits(self):
         """Returns the full ground-truth bit list for LinkEvaluator."""
         return self.generated_bits
+
+    def get_bpsk_fft_values(self):
+        return list(self.bpsk_fft_values)
