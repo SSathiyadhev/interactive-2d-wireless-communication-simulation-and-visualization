@@ -50,7 +50,7 @@ def main():
 
     receiver = Receiver(
         simulation_space=simulation_space,
-        x=2.0,
+        x=1.35,
         y=5.0,
         tuned_frequency=1.0e9,
         bit_rate=bit_rate,
@@ -75,7 +75,7 @@ def main():
         label="RX Point",
     )
 
-    wave_solver = WaveSolver(simulation_space)
+    wave_solver = WaveSolver(simulation_space, noise_level=0)
 
     simulation_space.set_running(True)
 
@@ -226,7 +226,7 @@ def main():
     baseband_axis.set_xlabel("Time (ns)")
     baseband_axis.set_ylabel("Amplitude")
 
-    frame = 0
+    frame = 50
 
     while simulation_space.is_running():
 

@@ -22,6 +22,7 @@ class Receiver:
         tuned_frequency,      # Carrier frequency to receive
         bit_rate,             # Transmitted bit rate in bits/second
         observation_window=10e-9,  # Duration of stored observation data
+        fft_window=30e-9, #fft sample window
         rrc_rolloff=0.35,
         rrc_span=8,
         **kwargs,
@@ -32,6 +33,11 @@ class Receiver:
         self.tuned_frequency = float(tuned_frequency)
         self.bit_rate = float(bit_rate)
         self.observation_window = float(observation_window)
+
+        self.fft_window = float(fft_window)
+
+        if self.fft_window <= 0:
+            raise ValueError("FFT window must be strictly positive.")
 
         if not self.simulation_space.is_inside(self.x, self.y):
             raise ValueError(
@@ -54,6 +60,15 @@ class Receiver:
         self.filtered_values = deque(maxlen=max_samples)
         self.mixed_values = deque(maxlen=max_samples)
         self.baseband_values = deque(maxlen=max_samples)
+
+        fft_samples = max(
+            8,
+            int(np.ceil(
+                self.fft_window / self.simulation_space.dt
+            )),
+        )
+
+        self.filtered_fft_values = deque(maxlen=fft_samples)
 
         # Unbounded append-only stream of decoded bits for LinkEvaluator
         self.demodulated_bits = []
@@ -123,6 +138,7 @@ class Receiver:
     def _filter_signal(self, received_value):
         filtered_value = self.bandpass_filter.filter(received_value)
         self.filtered_values.append(filtered_value)
+        self.filtered_fft_values.append(filtered_value)
         return filtered_value
 
     def _matched_filter_stage(self, mixed_value):
@@ -169,6 +185,45 @@ class Receiver:
             high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
         )
         self._update_internal_filter_delays()
+
+    def compute_filtered_fft(self):
+        """
+        Computes the FFT of the signal after the RF band-pass filter.
+
+        Returns
+        -------
+        frequencies : np.ndarray
+            Non-negative frequency values in Hz.
+
+        amplitudes : np.ndarray
+            Single-sided FFT amplitude spectrum.
+        """
+
+        samples = np.asarray(
+            self.filtered_fft_values,
+            dtype=np.float64,
+        )
+
+        if len(samples) < 8:
+            return np.array([]), np.array([])
+
+        n = len(samples)
+
+        fft_values = np.fft.rfft(samples)
+
+        frequencies = np.fft.rfftfreq(
+            n,
+            d=self.simulation_space.dt,
+        )
+
+        amplitudes = (
+            2.0 * np.abs(fft_values) / n
+        )
+
+        # DC is not doubled.
+        amplitudes[0] /= 2.0
+
+        return frequencies, amplitudes
 
     def set_position(self, x, y):
         self.x = float(x)
@@ -225,3 +280,7 @@ class Receiver:
 
     def get_estimated_total_delay_seconds(self):
         return self._total_delay_seconds
+
+    def get_filtered_fft_values(self):
+        return list(self.filtered_fft_values)
+    

@@ -9,6 +9,95 @@ Finite Difference Time Domain (FDTD) method.
 """
 
 import numpy as np
+from numba import njit, prange
+
+
+# -------------------------------------------------------------------------
+# JIT-compiled FDTD numerical kernel
+#
+# This function contains only numerical operations.
+# No Python objects or SimulationSpace methods are passed into Numba.
+# -------------------------------------------------------------------------
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _fdtd_step(
+    current_field,
+    previous_field,
+    next_field,
+    current_coefficient,
+    previous_coefficient,
+    courant_x_coefficient,
+    courant_y_coefficient,
+    noise_level,
+):
+    """
+    Performs one FDTD update over the complete simulation grid.
+
+    All coefficients are precomputed outside this function so that
+    they do not have to be recalculated at every simulation timestep.
+    """
+
+    rows = current_field.shape[0]
+    cols = current_field.shape[1]
+
+    # Preserve the original behavior:
+    # boundary cells are reset to zero every timestep.
+    next_field.fill(0.0)
+
+    # Parallelize the spatial FDTD calculation.
+    for i in prange(1, rows - 1):
+
+        for j in range(1, cols - 1):
+
+            center = current_field[i, j]
+
+            # ---------------------------------------------------------
+            # Spatial finite differences
+            # ---------------------------------------------------------
+
+            delta_x = (
+                current_field[i + 1, j]
+                - 2.0 * center
+                + current_field[i - 1, j]
+            )
+
+            delta_y = (
+                current_field[i, j + 1]
+                - 2.0 * center
+                + current_field[i, j - 1]
+            )
+
+            # ---------------------------------------------------------
+            # Final FDTD update
+            #
+            # Coefficients have already been divided by
+            # (1 + αdt/2).
+            # ---------------------------------------------------------
+
+            next_field[i, j] = (
+                current_coefficient[i, j] * center
+                + previous_coefficient[i, j] * previous_field[i, j]
+                + courant_x_coefficient[i, j] * delta_x
+                + courant_y_coefficient[i, j] * delta_y
+            )
+
+    # ---------------------------------------------------------
+    # Add global AWGN to the computed field
+    #
+    # noise_level = standard deviation of the Gaussian noise
+    # ---------------------------------------------------------
+
+    if noise_level > 0.0:
+
+        for i in prange(1, rows - 1):
+
+            for j in range(1, cols - 1):
+
+                next_field[i, j] += np.random.normal(
+                    0.0,
+                    noise_level,
+                )
+
 
 class WaveSolver:
     """
@@ -34,12 +123,67 @@ class WaveSolver:
         self.simulation_space = simulation_space
         self.noise_level = noise_level
 
-        # Validate the Courant stability condition
+        # ---------------------------------------------------------
+        # Cache simulation parameters
+        # ---------------------------------------------------------
 
-        wave_speed = simulation_space.get_wave_speed_map()
-        dx = simulation_space.dx
-        dy = simulation_space.dy
-        dt = simulation_space.dt
+        self._cache_simulation_parameters()
+
+        # ---------------------------------------------------------
+        # Validate the Courant stability condition
+        # ---------------------------------------------------------
+
+        self._validate_courant_stability()
+
+        # ---------------------------------------------------------
+        # Precompute FDTD coefficients
+        # ---------------------------------------------------------
+
+        self._calculate_coefficients()
+
+        # ---------------------------------------------------------
+        # Reusable next-field buffer
+        # ---------------------------------------------------------
+
+        self._next_field = np.zeros_like(
+            simulation_space.get_current_field()
+        )
+
+    # =====================================================================
+    # CACHE / SETUP
+    # =====================================================================
+
+    def _cache_simulation_parameters(self):
+        """
+        Caches simulation-space data that is unchanged during normal
+        timestep execution.
+
+        Keeping these references outside solve() avoids repeated
+        SimulationSpace API calls during every timestep.
+        """
+
+        simulation_space = self.simulation_space
+
+        # Material properties
+
+        self._wave_speed = simulation_space.get_wave_speed_map()
+        self._attenuation = simulation_space.get_attenuation_map()
+
+        # Grid parameters
+
+        self._dx = simulation_space.dx
+        self._dy = simulation_space.dy
+        self._dt = simulation_space.dt
+
+    def _validate_courant_stability(self):
+        """
+        Validates the Courant stability condition.
+        """
+
+        wave_speed = self._wave_speed
+        dt = self._dt
+        dx = self._dx
+        dy = self._dy
 
         courant = (
             (wave_speed * dt / dx) ** 2 +
@@ -52,7 +196,97 @@ class WaveSolver:
                 "The Courant stability condition is violated."
             )
 
-        self._next_field = np.zeros_like(simulation_space.get_current_field())
+    def _calculate_coefficients(self):
+        """
+        Calculates and caches all FDTD coefficients.
+
+        These coefficients depend only on:
+            wave_speed
+            attenuation
+            dx
+            dy
+            dt
+
+        Therefore they do not need to be recalculated every
+        simulation timestep.
+        """
+
+        wave_speed = self._wave_speed
+        attenuation = self._attenuation
+
+        dx = self._dx
+        dy = self._dy
+        dt = self._dt
+
+        # ---------------------------------------------------------
+        # Courant numbers
+        #
+        # Cx² = (c·dt/dx)²
+        #
+        # Cy² = (c·dt/dy)²
+        # ---------------------------------------------------------
+
+        courant_x_sq = (wave_speed * dt / dx) ** 2
+        courant_y_sq = (wave_speed * dt / dy) ** 2
+
+        # ---------------------------------------------------------
+        # Attenuation coefficient
+        #
+        # αdt/2
+        # ---------------------------------------------------------
+
+        alpha_dt_half = attenuation * dt / 2.0
+
+        # ---------------------------------------------------------
+        # Precompute the complete coefficients used by the
+        # final FDTD equation.
+        #
+        # Eⁿ⁺¹ =
+        #
+        # [2Eⁿ
+        #
+        # - (1 - αdt/2)Eⁿ⁻¹
+        #
+        # + (cdt/dx)²Δx
+        #
+        # + (cdt/dy)²Δy]
+        #
+        # / (1 + αdt/2)
+        # ---------------------------------------------------------
+
+        denominator = 1.0 + alpha_dt_half
+
+        self._current_coefficient = (
+            2.0 / denominator
+        )
+
+        self._previous_coefficient = (
+            -(1.0 - alpha_dt_half) / denominator
+        )
+
+        self._courant_x_coefficient = (
+            courant_x_sq / denominator
+        )
+
+        self._courant_y_coefficient = (
+            courant_y_sq / denominator
+        )
+
+    def _refresh_coefficients(self):
+        """
+        Refreshes cached simulation parameters and FDTD coefficients.
+
+        This should be called if SimulationSpace grid/material parameters
+        are changed after WaveSolver construction.
+        """
+
+        self._cache_simulation_parameters()
+        self._validate_courant_stability()
+        self._calculate_coefficients()
+
+    # =====================================================================
+    # SOLVER
+    # =====================================================================
 
     def solve(self):
         """
@@ -65,25 +299,16 @@ class WaveSolver:
         simulation_space = self.simulation_space
 
         # Electromagnetic fields
+        #
+        # These API calls are intentionally kept inside solve()
+        # because the fields change every simulation timestep.
 
         current_field = simulation_space.get_current_field()
         previous_field = simulation_space.get_previous_field()
 
-        # Material properties
-
-        wave_speed = simulation_space.get_wave_speed_map()
-        attenuation = simulation_space.get_attenuation_map()
-
-        # Grid parameters
-
-        dx = simulation_space.dx
-        dy = simulation_space.dy
-        dt = simulation_space.dt
-
         # Field at the next simulation time step (Eⁿ⁺¹)
 
         next_field = self._next_field
-        next_field.fill(0.0)
 
         # ---------------------------------------------------------
         # Governing Equation Homogenious Wave Equation with Attenuation(homeginuois local material properties)
@@ -167,34 +392,34 @@ class WaveSolver:
         # Cy² = (c·dt/dy)²
         # ---------------------------------------------------------
 
-        courant_x_sq = (wave_speed * dt / dx) ** 2
-        courant_y_sq = (wave_speed * dt / dy) ** 2
+        # ---------------------------------------------------------
+        # Perform the computationally expensive FDTD step inside
+        # the compiled parallel Numba kernel.
+        # ---------------------------------------------------------
 
-        alpha_dt_half = attenuation * dt / 2.0
-
-        next_field[1:-1, 1:-1] = (
-            (
-                2.0 * current_field[1:-1, 1:-1]
-                - (1.0 - alpha_dt_half[1:-1, 1:-1])
-                * previous_field[1:-1, 1:-1]
-                + courant_x_sq[1:-1, 1:-1] * (
-                    current_field[2:, 1:-1]
-                    - 2.0 * current_field[1:-1, 1:-1]
-                    + current_field[:-2, 1:-1]
-                )
-                + courant_y_sq[1:-1, 1:-1] * (
-                    current_field[1:-1, 2:]
-                    - 2.0 * current_field[1:-1, 1:-1]
-                    + current_field[1:-1, :-2]
-                )
-            )
-            / (1.0 + alpha_dt_half[1:-1, 1:-1])
+        _fdtd_step(
+            current_field,
+            previous_field,
+            next_field,
+            self._current_coefficient,
+            self._previous_coefficient,
+            self._courant_x_coefficient,
+            self._courant_y_coefficient,
+            self.noise_level,
         )
+
+        # ---------------------------------------------------------
+        # Pass the computed field back to SimulationSpace.
+        # ---------------------------------------------------------
 
         simulation_space.set_next_field(next_field)
 
         # need to implement noise addition here, but for now noice level is set to 0.0 so no noise is added
-     
+
+    # =====================================================================
+    # PUBLIC API
+    # =====================================================================
+
     def set_noise_level(self, noise_level):
         """
         Updates the global AWGN noise level.
@@ -208,3 +433,18 @@ class WaveSolver:
         """
 
         return self.noise_level
+
+    # =====================================================================
+    # OPTIONAL CACHE REFRESH API
+    # =====================================================================
+
+    def refresh(self):
+        """
+        Refreshes cached SimulationSpace parameters and FDTD coefficients.
+
+        Call this if the SimulationSpace's wave-speed map, attenuation map,
+        dx, dy, or dt are changed after this WaveSolver was created.
+        """
+
+        self._refresh_coefficients()
+    
