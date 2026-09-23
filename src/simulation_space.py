@@ -14,6 +14,11 @@ this class.
 import numpy as np
 
 
+EPSILON_0 = 8.8541878128e-12
+MU_0 = 4.0e-7 * np.pi
+C_0 = 3e8
+
+
 class SimulationSpace:
     """
     Represents the two-dimensional simulation environment.
@@ -25,20 +30,21 @@ class SimulationSpace:
         height,
         resolution_x,
         resolution_y,
-        dt,
+        dt_stability_multiplier,
     ):
         """
         Constructor Arguments
         ---------------------
-        width           : Physical width of the simulation space.
+        width                  : Physical width of the simulation space.
 
-        height          : Physical height of the simulation space.
+        height                 : Physical height of the simulation space.
 
-        resolution_x    : Number of sample points along the x-axis.
+        resolution_x           : Number of sample points along the x-axis.
 
-        resolution_y    : Number of sample points along the y-axis.
+        resolution_y           : Number of sample points along the y-axis.
 
-        dt              : Simulation time step.
+        dt_stability_multiplier : Multiplier used to determine the
+                                 simulation time step.
         """
 
         # Physical dimensions
@@ -59,7 +65,14 @@ class SimulationSpace:
         # Simulation clock
 
         self.time = 0.0
-        self.dt = dt
+
+        self.dt = dt_stability_multiplier / (
+            C_0 * np.sqrt(
+                (1.0 / self.dx**2)
+                +
+                (1.0 / self.dy**2)
+            )
+        )
 
         # Simulation state
 
@@ -77,20 +90,36 @@ class SimulationSpace:
             dtype=np.float64,
         )
 
+        # ---------------------------------------------------------
         # Material properties
+        #
+        # ε(x,y) : Permittivity
+        # σ(x,y) : Electrical conductivity
+        # μ(x,y) : Permeability
+        #
+        # Default material = vacuum
+        # ---------------------------------------------------------
 
-        self._wave_speed = np.full(
+        self._epsilon = np.full(
             (resolution_x, resolution_y),
-            3.0e8,
+            EPSILON_0,
             dtype=np.float64,
         )
 
-        self._attenuation = np.zeros(
+        self._sigma = np.zeros(
             (resolution_x, resolution_y),
             dtype=np.float64,
         )
 
+        self._mu = np.full(
+            (resolution_x, resolution_y),
+            MU_0,
+            dtype=np.float64,
+        )
+
+    # =============================================================
     # Helper methods
+    # =============================================================
 
     def _position_to_index(self, x, y):
         """
@@ -102,7 +131,6 @@ class SimulationSpace:
 
         return i, j
 
-
     def _index_to_position(self, i, j):
         """
         Converts grid indices to physical coordinates.
@@ -113,7 +141,9 @@ class SimulationSpace:
 
         return x, y
 
+    # =============================================================
     # Public API
+    # =============================================================
 
     def get_field(self, x, y):
         """
@@ -151,7 +181,8 @@ class SimulationSpace:
 
     def is_inside(self, x, y):
         """
-        Returns whether the specified location lies inside the simulation space.
+        Returns whether the specified location lies inside
+        the simulation space.
         """
 
         return (
@@ -160,7 +191,9 @@ class SimulationSpace:
             0.0 <= y <= self.height
         )
 
+    # =============================================================
     # Simulation control
+    # =============================================================
 
     def is_running(self):
         """
@@ -176,7 +209,9 @@ class SimulationSpace:
 
         self.running = running
 
+    # =============================================================
     # Simulation clock
+    # =============================================================
 
     def advance_time(self):
         """
@@ -192,24 +227,13 @@ class SimulationSpace:
 
         self.time = time
 
+    # =============================================================
     # Material properties
+    # =============================================================
 
-    def get_wave_speed(self, x, y):
+    def get_permittivity(self, x, y):
         """
-        Returns the wave propagation speed at the specified location.
-        """
-
-        if not self.is_inside(x, y):
-            raise ValueError(
-                f"Point ({x}, {y}) is outside the simulation space."
-            )
-
-        i, j = self._position_to_index(x, y)
-        return self._wave_speed[i, j]
-
-    def set_wave_speed(self, x, y, value):
-        """
-        Sets the wave propagation speed at the specified location.
+        Returns the permittivity at the specified location.
         """
 
         if not self.is_inside(x, y):
@@ -218,11 +242,32 @@ class SimulationSpace:
             )
 
         i, j = self._position_to_index(x, y)
-        self._wave_speed[i, j] = value
+        return self._epsilon[i, j]
 
-    def get_attenuation(self, x, y):
+    def set_permittivity(self, x, y, value):
         """
-        Returns the attenuation coefficient at the specified location.
+        Sets the permittivity at the specified location.
+        """
+
+        if not self.is_inside(x, y):
+            raise ValueError(
+                f"Point ({x}, {y}) is outside the simulation space."
+            )
+
+        value = float(value)
+
+        if value < EPSILON_0:
+            raise ValueError(
+                "Permittivity must be greater than or equal to "
+                "vacuum permittivity."
+            )
+
+        i, j = self._position_to_index(x, y)
+        self._epsilon[i, j] = value
+
+    def get_conductivity(self, x, y):
+        """
+        Returns the electrical conductivity at the specified location.
         """
 
         if not self.is_inside(x, y):
@@ -231,29 +276,115 @@ class SimulationSpace:
             )
 
         i, j = self._position_to_index(x, y)
-        return self._attenuation[i, j]
+        return self._sigma[i, j]
 
-    def set_attenuation(self, x, y, value):
+    def set_conductivity(self, x, y, value):
         """
-        Sets the attenuation coefficient at the specified location.
+        Sets the electrical conductivity at the specified location.
         """
 
         if not self.is_inside(x, y):
             raise ValueError(
                 f"Point ({x}, {y}) is outside the simulation space."
             )
+
+        value = float(value)
+
+        if value < 0.0:
+            raise ValueError(
+                "Conductivity cannot be negative."
+            )
+
         i, j = self._position_to_index(x, y)
-        self._attenuation[i, j] = value
+        self._sigma[i, j] = value
 
-    def set_global_wave_speed(self, value):
+    def get_permeability(self, x, y):
         """
-        Sets the wave propagation speed throughout the simulation space.
+        Returns the permeability at the specified location.
         """
 
-        self._wave_speed.fill(value)
+        if not self.is_inside(x, y):
+            raise ValueError(
+                f"Point ({x}, {y}) is outside the simulation space."
+            )
 
+        i, j = self._position_to_index(x, y)
+        return self._mu[i, j]
 
-    def set_wave_speed_rectangle(
+    def set_permeability(self, x, y, value):
+        """
+        Sets the permeability at the specified location.
+        """
+
+        if not self.is_inside(x, y):
+            raise ValueError(
+                f"Point ({x}, {y}) is outside the simulation space."
+            )
+
+        value = float(value)
+
+        if value < MU_0:
+            raise ValueError(
+                "Permeability must be greater than or equal to "
+                "vacuum permeability."
+            )
+
+        i, j = self._position_to_index(x, y)
+        self._mu[i, j] = value
+
+    # =============================================================
+    # Global material properties
+    # =============================================================
+
+    def set_global_permittivity(self, value):
+        """
+        Sets the permittivity throughout the simulation space.
+        """
+
+        value = float(value)
+
+        if value < EPSILON_0:
+            raise ValueError(
+                "Permittivity must be greater than or equal to "
+                "vacuum permittivity."
+            )
+
+        self._epsilon.fill(value)
+
+    def set_global_conductivity(self, value):
+        """
+        Sets the electrical conductivity throughout the simulation space.
+        """
+
+        value = float(value)
+
+        if value < 0.0:
+            raise ValueError(
+                "Conductivity cannot be negative."
+            )
+
+        self._sigma.fill(value)
+
+    def set_global_permeability(self, value):
+        """
+        Sets the permeability throughout the simulation space.
+        """
+
+        value = float(value)
+
+        if value < MU_0:
+            raise ValueError(
+                "Permeability must be greater than or equal to "
+                "vacuum permeability."
+            )
+
+        self._mu.fill(value)
+
+    # =============================================================
+    # Rectangular material regions
+    # =============================================================
+
+    def set_permittivity_rectangle(
         self,
         x1,
         y1,
@@ -262,13 +393,14 @@ class SimulationSpace:
         value,
     ):
         """
-        Sets the wave propagation speed inside a rectangular region.
+        Sets the permittivity inside a rectangular region.
         """
-        
+
         if x1 > x2 or y1 > y2:
             raise ValueError(
                 "Rectangle coordinates are invalid."
             )
+
         if (
             not self.is_inside(x1, y1)
             or
@@ -278,24 +410,23 @@ class SimulationSpace:
                 "Rectangle is outside the simulation space."
             )
 
+        value = float(value)
+
+        if value < EPSILON_0:
+            raise ValueError(
+                "Permittivity must be greater than or equal to "
+                "vacuum permittivity."
+            )
+
         i1, j1 = self._position_to_index(x1, y1)
         i2, j2 = self._position_to_index(x2, y2)
 
-        self._wave_speed[
-            i1:i2+1,
-            j1:j2+1,
+        self._epsilon[
+            i1:i2 + 1,
+            j1:j2 + 1,
         ] = value
 
-
-    def set_global_attenuation(self, value):
-        """
-        Sets the attenuation coefficient throughout the simulation space.
-        """
-
-        self._attenuation.fill(value)
-
-
-    def set_attenuation_rectangle(
+    def set_conductivity_rectangle(
         self,
         x1,
         y1,
@@ -304,7 +435,7 @@ class SimulationSpace:
         value,
     ):
         """
-        Sets the attenuation coefficient inside a rectangular region.
+        Sets the electrical conductivity inside a rectangular region.
         """
 
         if x1 > x2 or y1 > y2:
@@ -321,15 +452,66 @@ class SimulationSpace:
                 "Rectangle is outside the simulation space."
             )
 
+        value = float(value)
+
+        if value < 0.0:
+            raise ValueError(
+                "Conductivity cannot be negative."
+            )
+
         i1, j1 = self._position_to_index(x1, y1)
         i2, j2 = self._position_to_index(x2, y2)
 
-        self._attenuation[
-            i1:i2+1,
-            j1:j2+1,
+        self._sigma[
+            i1:i2 + 1,
+            j1:j2 + 1,
         ] = value
 
+    def set_permeability_rectangle(
+        self,
+        x1,
+        y1,
+        x2,
+        y2,
+        value,
+    ):
+        """
+        Sets the permeability inside a rectangular region.
+        """
+
+        if x1 > x2 or y1 > y2:
+            raise ValueError(
+                "Rectangle coordinates are invalid."
+            )
+
+        if (
+            not self.is_inside(x1, y1)
+            or
+            not self.is_inside(x2, y2)
+        ):
+            raise ValueError(
+                "Rectangle is outside the simulation space."
+            )
+
+        value = float(value)
+
+        if value < MU_0:
+            raise ValueError(
+                "Permeability must be greater than or equal to "
+                "vacuum permeability."
+            )
+
+        i1, j1 = self._position_to_index(x1, y1)
+        i2, j2 = self._position_to_index(x2, y2)
+
+        self._mu[
+            i1:i2 + 1,
+            j1:j2 + 1,
+        ] = value
+
+    # =============================================================
     # WaveSolver interface
+    # =============================================================
 
     def get_current_field(self):
         """
@@ -349,23 +531,32 @@ class SimulationSpace:
 
         return self._previous_field
 
-    def get_wave_speed_map(self):
+    def get_permittivity_map(self):
         """
-        Returns the wave propagation speed map.
+        Returns the spatial permittivity map.
 
         Intended for use by the WaveSolver.
         """
 
-        return self._wave_speed
+        return self._epsilon
 
-    def get_attenuation_map(self):
+    def get_conductivity_map(self):
         """
-        Returns the attenuation coefficient map.
+        Returns the spatial conductivity map.
 
         Intended for use by the WaveSolver.
         """
 
-        return self._attenuation
+        return self._sigma
+
+    def get_permeability_map(self):
+        """
+        Returns the spatial permeability map.
+
+        Intended for use by the WaveSolver.
+        """
+
+        return self._mu
 
     def set_next_field(self, next_field):
         """
@@ -374,7 +565,11 @@ class SimulationSpace:
 
         self._previous_field[:, :] = self._current_field
         self._current_field[:, :] = next_field
-        
+
+    # =============================================================
+    # Reset
+    # =============================================================
+
     def reset(self):
         """
         Resets the complete simulation state.
@@ -383,3 +578,4 @@ class SimulationSpace:
         self.clear()
         self.time = 0.0
         self.running = False
+    

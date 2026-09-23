@@ -3,8 +3,8 @@ materials.py
 
 Defines the Material class.
 
-The Material class represents a material occupying a rectangular
-region of the SimulationSpace.
+The Material class represents an electromagnetic material occupying a
+rectangular region of the SimulationSpace.
 
 Each material is described by three electromagnetic properties:
 
@@ -12,10 +12,15 @@ Each material is described by three electromagnetic properties:
     relative_permeability  : μr
     conductivity           : σ [S/m]
 
-From these properties the class calculates:
+From these relative properties, the class calculates the corresponding
+absolute material properties:
 
-    wave_speed             : propagation speed [m/s]
-    attenuation            : damping coefficient [1/s]
+    permittivity  : ε = ε0 εr [F/m]
+    permeability  : μ = μ0 μr [H/m]
+    conductivity  : σ [S/m]
+
+The three absolute material properties are written directly into the
+corresponding rectangular regions of SimulationSpace.
 
 The class supports:
 
@@ -28,8 +33,9 @@ The class supports:
            Any unknown material name can be used if the user provides
            εr, μr and σ.
 
-The calculated wave speed and attenuation are written into the
-corresponding rectangular region of SimulationSpace.
+The Material class does not calculate wave speed or attenuation.
+Those quantities are derived from the electromagnetic material
+properties and are not stored as independent simulation maps.
 """
 
 import numpy as np
@@ -50,9 +56,6 @@ class Material:
 
     # Permeability of free space [H/m]
     MU_0 = 4.0e-7 * np.pi
-
-    # Speed of light in vacuum [m/s]
-    C_0 = 1.0 / np.sqrt(MU_0 * EPSILON_0)
 
     # ------------------------------------------------------------------
     # Built-in material database
@@ -266,14 +269,16 @@ class Material:
         # Validate electromagnetic properties
         # ==============================================================
 
-        if self.relative_permittivity <= 0.0:
+        if self.relative_permittivity < 1.0:
             raise ValueError(
-                "Relative permittivity must be greater than zero."
+                "Relative permittivity must be greater than or equal "
+                "to 1.0."
             )
 
-        if self.relative_permeability <= 0.0:
+        if self.relative_permeability < 1.0:
             raise ValueError(
-                "Relative permeability must be greater than zero."
+                "Relative permeability must be greater than or equal "
+                "to 1.0."
             )
 
         if self.conductivity < 0.0:
@@ -282,81 +287,18 @@ class Material:
             )
 
         # ==============================================================
-        # Calculate material properties required by WaveSolver
+        # Calculate absolute electromagnetic properties
         # ==============================================================
 
-        self.wave_speed = self._calculate_wave_speed()
-
-        self.attenuation = self._calculate_attenuation()
-
-    # ==================================================================
-    # MATERIAL CALCULATIONS
-    # ==================================================================
-
-    def _calculate_wave_speed(self):
-        """
-        Calculates electromagnetic wave propagation speed.
-
-        For a material:
-
-            ε = ε0 εr
-            μ = μ0 μr
-
-        Therefore:
-
-            v = 1 / sqrt(με)
-
-        which can also be written as:
-
-            v = c0 / sqrt(μr εr)
-
-        Returns
-        -------
-        float
-            Wave propagation speed [m/s].
-        """
-
-        return self.C_0 / np.sqrt(
-            self.relative_permeability
-            * self.relative_permittivity
-        )
-
-    def _calculate_attenuation(self):
-        """
-        Calculates the damping coefficient used by the current
-        WaveSolver equation.
-
-        The solver uses:
-
-            ∂²E/∂t² + α∂E/∂t
-            =
-            c²(∂²E/∂x² + ∂²E/∂y²)
-
-        For a conductive medium, the conductivity term can be
-        represented in this simplified model using:
-
-            α = σ / ε
-
-        where:
-
-            ε = ε0 εr
-
-        Therefore:
-
-            α = σ / (ε0 εr)
-
-        Returns
-        -------
-        float
-            Attenuation/damping coefficient [1/s].
-        """
-
-        epsilon = (
+        self.permittivity = (
             self.EPSILON_0
             * self.relative_permittivity
         )
 
-        return self.conductivity / epsilon
+        self.permeability = (
+            self.MU_0
+            * self.relative_permeability
+        )
 
     # ==================================================================
     # APPLY MATERIAL TO SIMULATION SPACE
@@ -366,40 +308,55 @@ class Material:
         """
         Applies this material to its rectangular region.
 
-        The existing SimulationSpace rectangle APIs are used to
-        update the corresponding wave-speed and attenuation maps.
+        The three electromagnetic material properties are written
+        directly into the corresponding SimulationSpace maps:
+
+            ε(x,y)
+            μ(x,y)
+            σ(x,y)
+
+        SimulationSpace handles conversion from physical coordinates
+        to grid indices internally.
         """
 
         # --------------------------------------------------------------
-        # Set the calculated wave speed throughout the material
-        # rectangle.
+        # Set permittivity
         #
-        # SimulationSpace handles conversion from physical coordinates
-        # to grid indices internally.
+        # ε = ε0 εr
         # --------------------------------------------------------------
 
-        self.simulation_space.set_wave_speed_rectangle(
+        self.simulation_space.set_permittivity_rectangle(
             self.x_min,
             self.y_min,
             self.x_max,
             self.y_max,
-            self.wave_speed,
+            self.permittivity,
         )
 
         # --------------------------------------------------------------
-        # Set the calculated attenuation throughout the material
-        # rectangle.
+        # Set permeability
         #
-        # SimulationSpace handles conversion from physical coordinates
-        # to grid indices internally.
+        # μ = μ0 μr
         # --------------------------------------------------------------
 
-        self.simulation_space.set_attenuation_rectangle(
+        self.simulation_space.set_permeability_rectangle(
             self.x_min,
             self.y_min,
             self.x_max,
             self.y_max,
-            self.attenuation,
+            self.permeability,
+        )
+
+        # --------------------------------------------------------------
+        # Set electrical conductivity
+        # --------------------------------------------------------------
+
+        self.simulation_space.set_conductivity_rectangle(
+            self.x_min,
+            self.y_min,
+            self.x_max,
+            self.y_max,
+            self.conductivity,
         )
 
     # ==================================================================
@@ -434,19 +391,19 @@ class Material:
 
         return self.conductivity
 
-    def get_wave_speed(self):
+    def get_permittivity(self):
         """
-        Returns wave propagation speed [m/s].
-        """
-
-        return self.wave_speed
-
-    def get_attenuation(self):
-        """
-        Returns the attenuation/damping coefficient [1/s].
+        Returns absolute permittivity ε [F/m].
         """
 
-        return self.attenuation
+        return self.permittivity
+
+    def get_permeability(self):
+        """
+        Returns absolute permeability μ [H/m].
+        """
+
+        return self.permeability
 
     def get_region(self):
         """
@@ -497,4 +454,3 @@ class Material:
         """
 
         return list(cls.MATERIAL_DATABASE.keys())
-

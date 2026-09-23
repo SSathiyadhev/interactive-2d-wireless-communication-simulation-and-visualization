@@ -14,28 +14,13 @@ def main():
     resolution_x = 600
     resolution_y = 600
 
-    dx = 10.0 / (resolution_x - 1)
-    dy = 10.0 / (resolution_y - 1)
-
-    c = 3.0e8
-
-    dt = 0.85 / (
-        c * np.sqrt(
-            (1.0 / dx**2) +
-            (1.0 / dy**2)
-        )
-    )
-
     simulation_space = SimulationSpace(
         width=10.0,
         height=10.0,
         resolution_x=resolution_x,
         resolution_y=resolution_y,
-        dt=dt,
+        dt_stability_multiplier=0.85,
     )
-
-    simulation_space.set_global_wave_speed(c)
-    simulation_space.set_global_attenuation(0.0)
 
     bit_rate = 500.0e6
 
@@ -60,7 +45,7 @@ def main():
     evaluator = LinkEvaluator(
         transmitter=transmitter,
         receiver=receiver,
-        speed_of_light=c,
+        speed_of_light=3.0e8,
         filter_group_delay_samples=8,
         warmup_bits=2,
     )
