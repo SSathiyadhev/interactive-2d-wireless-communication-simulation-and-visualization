@@ -48,23 +48,25 @@ def main():
         bit_rate=bit_rate,
     )
 
-    receiver = Receiver(
-        simulation_space=simulation_space,
-        x=1.35,
-        y=5.0,
-        tuned_frequency=1.0e9,
-        bit_rate=bit_rate,
-    )
+    # Receiver list (Baseline primary receiver is index 0 at x=2.0)
+    receivers = [
+        Receiver(simulation_space, x=2.0, y=5.0, tuned_frequency=1.0e9, bit_rate=bit_rate),
+        Receiver(simulation_space, x=3.5, y=5.0, tuned_frequency=1.0e9, bit_rate=bit_rate),
+    ]
 
-    # LinkEvaluator handles delay synchronization and BER metrics
-    evaluator = LinkEvaluator(
-        transmitter=transmitter,
-        receiver=receiver,
-        speed_of_light=c,
-        filter_group_delay_samples=8,
-        warmup_bits=2,
-    )
-    evaluator.sync_receiver_delay()
+    evaluators = []
+    for rx in receivers:
+        ev = LinkEvaluator(
+            transmitter=transmitter,
+            receiver=rx,
+            speed_of_light=c,
+            filter_group_delay_samples=8,
+            warmup_bits=2,
+        )
+        ev.sync_receiver_delay()
+        evaluators.append(ev)
+
+    active_rx = [0]
 
     # ObservationPoint for spectral analysis and energy tracking
     observation_point = ObservationPoint(
@@ -82,23 +84,7 @@ def main():
     plt.ion()
 
     # =============================================================
-    # FIGURE LAYOUT
-    #
-    # LEFT:
-    #   Row 0-2: Electromagnetic field
-    #   Row 3:   Status / BER readout
-    #
-    # MIDDLE (Transmitter):
-    #   1. Original square-wave BPSK symbols
-    #   2. RRC-shaped baseband
-    #   3. RRC-BPSK transmitted signal
-    #   4. Live FFT Amplitude Spectrum (from ObservationPoint)
-    #
-    # RIGHT (Receiver):
-    #   1. Received signal
-    #   2. After band-pass filter
-    #   3. After mixing
-    #   4. After RRC matched filter
+    # FIGURE LAYOUT (ORIGINAL CLEAN MATPLOTLIB STRUCTURE)
     # =============================================================
 
     figure = plt.figure(
@@ -113,7 +99,7 @@ def main():
     )
 
     # =============================================================
-    # 1. ELECTROMAGNETIC FIELD
+    # 1. ELECTROMAGNETIC FIELD (Original dimensions, no clutter)
     # =============================================================
 
     field_axis = figure.add_subplot(grid[0:3, 0])
@@ -201,7 +187,7 @@ def main():
     # 6. Received signal
     received_axis = figure.add_subplot(grid[0, 2])
     received_line, = received_axis.plot([], [])
-    received_axis.set_title("Receiver — Received Signal")
+    rx_title = received_axis.set_title("Receiver — Received Signal")
     received_axis.set_xlabel("Time (ns)")
     received_axis.set_ylabel("Amplitude")
 
@@ -226,16 +212,39 @@ def main():
     baseband_axis.set_xlabel("Time (ns)")
     baseband_axis.set_ylabel("Amplitude")
 
+    # =============================================================
+    # INTERACTIVE SWITCH (Click anywhere near receiver or press keys)
+    # =============================================================
+    def on_click(event):
+        if event.inaxes == field_axis and event.xdata is not None and event.ydata is not None:
+            # Map pixel click coordinates back to physical meters (dx = 10 / 599)
+            click_phys_x = event.xdata * dx
+            click_phys_y = event.ydata * dy
+            dists = [np.hypot(r.x - click_phys_x, r.y - click_phys_y) for r in receivers]
+            nearest = int(np.argmin(dists))
+            if dists[nearest] < 1.0:
+                active_rx[0] = nearest
+
+    def on_key(event):
+        if event.key in [str(i + 1) for i in range(len(receivers))]:
+            active_rx[0] = int(event.key) - 1
+
+    figure.canvas.mpl_connect("button_press_event", on_click)
+    figure.canvas.mpl_connect("key_press_event", on_key)
+
     frame = 50
 
     while simulation_space.is_running():
 
         transmitter.transmit()
         wave_solver.solve()
-        receiver.receive()
-        observation_point.sample()
 
-        evaluator.evaluate()
+        for rx in receivers:
+            rx.receive()
+        for ev in evaluators:
+            ev.evaluate()
+
+        observation_point.sample()
 
         if frame % 1 == 0:
             image.set_data(simulation_space.get_current_field().T)
@@ -273,12 +282,18 @@ def main():
                 max_amp = np.max(amps[mask]) if np.any(mask) else 1.0
                 fft_axis.set_ylim(0.0, max(max_amp * 1.2, 0.05))
 
+            # Active Receiver Binding
+            current_rx = receivers[active_rx[0]]
+            current_ev = evaluators[active_rx[0]]
+
+            rx_title.set_text(f"Receiver {active_rx[0] + 1} ({current_rx.x:.2f}m) — Received Signal")
+
             # Receiver Data
-            rx_time_values = np.asarray(receiver.get_observation_times())
-            received_values = np.asarray(receiver.get_received_values())
-            filtered_values = np.asarray(receiver.get_filtered_values())
-            mixed_values = np.asarray(receiver.get_mixed_values())
-            baseband_values = np.asarray(receiver.get_baseband_values())
+            rx_time_values = np.asarray(current_rx.get_observation_times())
+            received_values = np.asarray(current_rx.get_received_values())
+            filtered_values = np.asarray(current_rx.get_filtered_values())
+            mixed_values = np.asarray(current_rx.get_mixed_values())
+            baseband_values = np.asarray(current_rx.get_baseband_values())
 
             if len(rx_time_values) > 0:
                 rx_time_ns = rx_time_values * 1e9
@@ -317,10 +332,10 @@ def main():
                     axis.set_ylim(value_min - margin, value_max + margin)
 
                 # Performance and Energy Telemetry Readout
-                bit_error_rate = evaluator.get_bit_error_rate()
+                bit_error_rate = current_ev.get_bit_error_rate()
                 ber_display = (
                     f"{bit_error_rate:.4f}"
-                    if evaluator.get_total_bits_compared() > 0
+                    if current_ev.get_total_bits_compared() > 0
                     else "n/a"
                 )
 
@@ -328,12 +343,13 @@ def main():
                 window_energy = observation_point.get_windowed_energy()
 
                 ber_text.set_text(
+                    f"Selected RX   : #{active_rx[0] + 1} ({current_rx.x:.2f} m, {current_rx.y:.2f} m)\n"
                     f"t = {simulation_space.time * 1e9:.2f} ns\n"
-                    f"Bits Compared : {evaluator.get_total_bits_compared()}\n"
-                    f"Bit Errors    : {evaluator.get_bit_errors()}\n"
+                    f"Bits Compared : {current_ev.get_total_bits_compared()}\n"
+                    f"Bit Errors    : {current_ev.get_bit_errors()}\n"
                     f"BER           : {ber_display}\n"
                     f"Est. Delay    : "
-                    f"{evaluator.get_estimated_total_delay_seconds() * 1e9:.2f} ns\n"
+                    f"{current_ev.get_estimated_total_delay_seconds() * 1e9:.2f} ns\n"
                     f"-------------------------\n"
                     f"Peak Freq     : {peak_f / 1e9:.3f} GHz\n"
                     f"Peak Mag      : {peak_a:.3e}\n"
