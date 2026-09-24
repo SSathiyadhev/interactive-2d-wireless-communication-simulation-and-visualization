@@ -461,8 +461,13 @@ async def ws_sim(websocket: WebSocket):
             if runtime.running:
                 for _ in range(runtime.steps_per_frame):
                     runtime.step()
-            await websocket.send_bytes(runtime.field_bytes())
-            await websocket.send_json(runtime.status())
+            
+            try:
+                await websocket.send_bytes(runtime.field_bytes())
+                await websocket.send_json(runtime.status())
+            except Exception:
+                break  # Exit cleanly if a frame fails to send
+
             elapsed = time.perf_counter() - loop_start
             await asyncio.sleep(max(0.001, frame_interval - elapsed))
     except (WebSocketDisconnect, RuntimeError):
