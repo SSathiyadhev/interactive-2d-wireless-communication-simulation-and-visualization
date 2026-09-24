@@ -160,7 +160,7 @@ class SimulationRuntime:
         # Rotation mask support
         angle_rad = np.radians(float(angle))
         if angle_rad != 0.0 and hasattr(self.space, "grid_x") and hasattr(self.space, "grid_y"):
-            try:
+            
                 cx = (float(x_min) + float(x_max)) / 2.0
                 cy = (float(y_min) + float(y_max)) / 2.0
                 hx = (float(x_max) - float(x_min)) / 2.0
@@ -319,7 +319,7 @@ async def index():
 
 
 def handle_control_message(message: dict):
-    try:
+    
         msg_type = message.get("type")
 
         if msg_type in ("start", "resume"):
@@ -417,10 +417,11 @@ def handle_control_message(message: dict):
 @app.websocket("/ws/sim")
 async def ws_sim(websocket: WebSocket):
     await websocket.accept()
-    try:
-        await websocket.send_json(runtime.status())
-    except Exception:
-        return
+   try:
+    await websocket.send_json(runtime.status())
+except Exception as e:
+    print(f"Initial WebSocket status error: {type(e).__name__}: {e}", flush=True)
+    return
 
     async def receive_loop():
         try:
