@@ -1,0 +1,239 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #14161a;
+  color: #e6e6e6;
+  margin: 0;
+  padding: 12px 18px;
+  font-size: 13px; /* Upgraded base font size */
+}
+
+h1 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+}
+
+.layout {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+/* -------------------------------------------------------------
+   Left: simulation space -- takes up almost the whole width.
+   ------------------------------------------------------------- */
+
+.canvas-panel {
+  flex: 1 1 auto;
+  min-width: 0; /* allow flex child to shrink below content size */
+}
+
+.canvas-stack {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid #3a3d44;
+  border-radius: 6px;
+  overflow: hidden;
+  max-height: calc(100vh - 90px);
+  max-width: calc(100vh - 90px);
+}
+
+.canvas-stack canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#fieldCanvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+#overlayCanvas {
+  cursor: crosshair;
+}
+
+.hint {
+  color: #9a9ea6;
+  font-size: 12px;
+  margin-top: 8px;
+  max-width: 700px;
+}
+
+/* -------------------------------------------------------------
+   Right: compact, fixed-width sidebar.
+   ------------------------------------------------------------- */
+
+.controls-panel {
+  flex: 0 0 290px; /* Slightly wider sidebar to comfortably fit larger fonts */
+}
+
+.control-group {
+  background: #1c1f26;
+  border: 1px solid #2c2f37;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.control-group h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9a9ea6;
+  margin: 0 0 8px 0;
+}
+
+button {
+  background: #2c3540;
+  color: #e6e6e6;
+  border: 1px solid #3d4753;
+  border-radius: 5px;
+  padding: 7px 12px;
+  margin-right: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3a4552;
+}
+
+.mode-btn.active {
+  background: #3f6fd1;
+  border-color: #3f6fd1;
+}
+
+label {
+  display: block;
+  font-size: 12px;
+  margin-top: 8px;
+  margin-bottom: 3px;
+  color: #cfd2d8;
+}
+
+input[type="range"], input[type="text"], input[type="number"], select {
+  width: 100%;
+  font-size: 12px;
+  padding: 5px 8px;
+  background: #101318;
+  border: 1px solid #2c2f37;
+  color: #e6e6e6;
+  border-radius: 4px;
+}
+
+.status-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.status-table td {
+  padding: 5px 0;
+  border-bottom: 1px solid #2c2f37;
+}
+
+.status-table td:first-child {
+  color: #9a9ea6;
+}
+
+.status-table td:last-child {
+  text-align: right;
+  font-family: Consolas, monospace;
+  font-weight: 600;
+}
+
+/* -------------------------------------------------------------
+   Floating panels: appear near whichever marker (TX/RX) was
+   clicked, positioned in JS (top/left set dynamically). Fixed
+   positioning so they float above the canvas/sidebar regardless
+   of page scroll.
+   ------------------------------------------------------------- */
+
+.floating-panel {
+  position: fixed;
+  width: 310px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: #1c1f26;
+  border: 1px solid #3f6fd1;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  font-size: 12px;
+}
+
+.floating-panel[hidden] {
+  display: none;
+}
+
+.floating-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  background: #22262f;
+  border-bottom: 1px solid #2c2f37;
+  border-radius: 8px 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: default;
+}
+
+.panel-close {
+  background: none;
+  border: none;
+  color: #9a9ea6;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.panel-close:hover {
+  color: #e6e6e6;
+  background: none;
+}
+
+.floating-panel-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chart-box {
+  background: #101318;
+  border: 1px solid #2c2f37;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.chart-title {
+  font-size: 12px;
+  color: #cfd2d8;
+  margin-bottom: 5px;
+  font-weight: 600;
+}
+
+canvas.chart {
+  width: 100%;
+  height: 90px;
+  display: block;
+  background: #0b0d11;
+  border-radius: 4px;
+}
+
+.panel-stats {
+  background: #1c1f26;
+}

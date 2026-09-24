@@ -264,7 +264,7 @@ class SimulationSpace:
         """
         Sets the wave propagation speed inside a rectangular region.
         """
-        
+
         if x1 > x2 or y1 > y2:
             raise ValueError(
                 "Rectangle coordinates are invalid."
@@ -290,6 +290,12 @@ class SimulationSpace:
     def set_global_attenuation(self, value):
         """
         Sets the attenuation coefficient throughout the simulation space.
+
+        NOTE: if an absorbing boundary has been applied via
+        set_absorbing_boundary(), calling this afterward will
+        overwrite it (fill() replaces every cell unconditionally).
+        Call set_global_attenuation() first, then
+        set_absorbing_boundary(), if you want both.
         """
 
         self._attenuation.fill(value)
@@ -328,6 +334,83 @@ class SimulationSpace:
             i1:i2+1,
             j1:j2+1,
         ] = value
+
+    def set_absorbing_boundary(self, thickness_cells, max_attenuation):
+        """
+        Applies a tapered attenuation layer near all four edges of the
+        grid, approximating an open (non-reflecting) boundary.
+
+        This is a simplified alternative to a full Perfectly Matched
+        Layer (PML). Attenuation increases smoothly (quadratically,
+        not abruptly) from 0 at the inner edge of the layer to
+        max_attenuation at the outermost cells. The taper matters:
+        an abrupt jump in attenuation itself causes a partial
+        reflection at the transition, which would partly defeat the
+        purpose.
+
+        Arguments
+        ---------
+        thickness_cells : Width of the absorbing layer, in grid
+                          cells, measured inward from each edge.
+        max_attenuation : Attenuation coefficient at the outermost
+                          cells (same units as set_attenuation/
+                          set_global_attenuation). Tune this
+                          empirically -- too small and reflections
+                          are barely reduced; too large relative to
+                          dt can itself cause instability or
+                          reflection at the layer's inner edge.
+
+        This affects the SAME attenuation map used by
+        set_global_attenuation() / set_attenuation_rectangle() --
+        it takes the elementwise maximum with whatever is already
+        set, so it will not reduce attenuation you set elsewhere
+        (e.g. inside an obstacle), only add the boundary taper on
+        top of it. Call this AFTER set_global_attenuation() /
+        set_attenuation_rectangle(), not before, since those
+        methods overwrite rather than combine.
+        """
+
+        thickness_cells = int(thickness_cells)
+
+        if thickness_cells <= 0:
+            raise ValueError(
+                "thickness_cells must be a positive integer."
+            )
+
+        if thickness_cells > min(self.resolution_x, self.resolution_y) // 2:
+            raise ValueError(
+                "thickness_cells is too large for this grid -- the "
+                "two boundary layers would overlap in the middle."
+            )
+
+        ix = np.arange(self.resolution_x)
+        iy = np.arange(self.resolution_y)
+
+        # Distance (in cells) from each index to the nearest edge
+        # along that axis.
+        distance_x = np.minimum(ix, self.resolution_x - 1 - ix)
+        distance_y = np.minimum(iy, self.resolution_y - 1 - iy)
+
+        distance_x_grid, distance_y_grid = np.meshgrid(
+            distance_x, distance_y, indexing="ij",
+        )
+
+        distance_to_edge = np.minimum(distance_x_grid, distance_y_grid)
+
+        # 0 at the layer's inner boundary (and everywhere further
+        # inward, clipped), rising to 1 at the true edge.
+        depth_ratio = np.clip(
+            (thickness_cells - distance_to_edge) / thickness_cells,
+            0.0,
+            1.0,
+        )
+
+        boundary_attenuation = max_attenuation * depth_ratio ** 2
+
+        self._attenuation = np.maximum(
+            self._attenuation,
+            boundary_attenuation,
+        )
 
     # WaveSolver interface
 
@@ -374,7 +457,7 @@ class SimulationSpace:
 
         self._previous_field[:, :] = self._current_field
         self._current_field[:, :] = next_field
-        
+
     def reset(self):
         """
         Resets the complete simulation state.

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>2D FDTD Wave Propagation & SDR Transceiver Workbench</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #06090f;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      padding: 10px 16px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    header h1 { font-size: 15px; font-weight: 700; color: #f8fafc; }
+    .header-controls { display: flex; align-items: center; gap: 10px; }
+    .preset-select {
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #38bdf8;
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .workbench-container { display: flex; gap: 14px; height: calc(100vh - 60px); width: 100%; }
+
+    .field-card {
+      flex: 1;
+      background: #0d121c;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      min-width: 0;
+    }
+    .canvas-wrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas#emCanvas {
+      width: min(100%, calc(100vh - 105px));
+      height: min(100%, calc(100vh - 105px));
+      aspect-ratio: 1 / 1;
+      background: #ffffff;
+      border-radius: 6px;
+      border: 1.5px solid #334155;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+    }
+    .canvas-toolbar {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #64748b;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: min(100%, calc(100vh - 105px));
+    }
+
+    .sidebar {
+      width: 330px;
+      background: #0d121c;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+    .control-block { display: flex; flex-direction: column; gap: 6px; }
+    .control-block h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: #94a3b8; }
+    .btn-group { display: flex; gap: 5px; }
+    button {
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      flex: 1;
+    }
+    button:hover { background: #334155; color: #fff; }
+    button.active { background: #0284c7; border-color: #38bdf8; color: #ffffff; }
+    button.success { background: #065f46; border-color: #10b981; color: #ecfdf5; }
+    button.danger { background: #7f1d1d; border-color: #ef4444; color: #fee2e2; }
+
+    .node-card {
+      background: #131b29;
+      border: 1.5px solid #1f2937;
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .node-card:hover { transform: translateY(-1px); }
+
+    .telemetry-table { width: 100%; font-size: 11.5px; border-collapse: collapse; }
+    .telemetry-table td { padding: 4px 0; color: #94a3b8; border-bottom: 1px solid #1a2230; }
+    .telemetry-table td:last-child { text-align: right; color: #f1f5f9; font-weight: 600; font-family: monospace; }
+
+    .draggable-modal {
+      position: fixed;
+      background: rgba(13, 18, 28, 0.98);
+      backdrop-filter: blur(14px);
+      border-radius: 8px;
+      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.85);
+      flex-direction: column;
+      z-index: 9999;
+      overflow: hidden;
+    }
+    .modal-header {
+      background: #1e293b;
+      padding: 7px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: grab;
+      border-bottom: 1px solid #334155;
+    }
+    .modal-header:active { cursor: grabbing; }
+    .modal-title { font-size: 11.5px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+    .icon-btn { background: transparent; border: none; color: #94a3b8; font-size: 14px; cursor: pointer; padding: 0 3px; flex: none; }
+    .icon-btn:hover { color: #f87171; background: transparent; }
+
+    #floatingScope { 
+      top: 80px; 
+      left: 80px; 
+      width: 560px; 
+      border: 1.5px solid #38bdf8; 
+      display: none; 
+    }
+    .scope-tabs { display: flex; background: #090d15; border-bottom: 1px solid #1f2937; flex-wrap: wrap; }
+    .scope-tab { padding: 5px 8px; font-size: 10.5px; font-weight: 600; text-align: center; color: #94a3b8; cursor: pointer; border-bottom: 2px solid transparent; flex: 1; }
+    .scope-tab:hover { color: #f1f5f9; }
+    .scope-tab.active { color: #38bdf8; border-bottom-color: #38bdf8; background: #111a28; }
+    .scope-body { padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    canvas#scopeCanvas { width: 100%; height: 160px; background: #040711; border-radius: 4px; border: 1px solid #1f2937; }
+    .scope-subtext { display: flex; justify-content: space-between; font-size: 10.5px; color: #64748b; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>2D FDTD Wave Propagation & SDR Transceiver Workbench</h1>
+    <div class="header-controls">
+      <select id="scenarioSelect" class="preset-select">
+        <option value="cochannel">Preset: Co-Channel Collision</option>
+        <option value="los">Preset: Line-of-Sight (TX1 Only)</option>
+        <option value="adjacent">Preset: Adjacent Channel</option>
+        <option value="concrete_wall">Preset: Center Concrete Barrier</option>
+      </select>
+      <div class="btn-group" style="width:160px;">
+        <button id="btnViewField" class="active">Field (Ez)</button>
+        <button id="btnViewEnergy">Intensity</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="workbench-container">
+    <div class="field-card">
+      <div class="canvas-wrapper">
+        <canvas id="emCanvas" width="600" height="600"></canvas>
+      </div>
+      <div class="canvas-toolbar">
+        <span>Click nodes to probe | Drag nodes to relocate</span>
+        <span id="canvasCoordsTelemetry" style="color:#38bdf8;">Coords: (0.00 m, 0.00 m)</span>
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div class="control-block">
+        <h3>Simulation Engine</h3>
+        <div class="btn-group">
+          <button id="btnStart" class="active">Start</button>
+          <button id="btnPause">Pause</button>
+          <button id="btnReset">Reset</button>
+        </div>
+      </div>
+
+      <div class="control-block">
+        <h3>Deployment Tools</h3>
+        <div class="btn-group">
+          <button id="btnAddTransmitterBtn" class="success" style="font-size:10.5px;">+ Add Transmitter</button>
+          <button id="btnAddReceiverBtn" class="success" style="font-size:10.5px;">+ Add Receiver</button>
+        </div>
+        <button id="btnClearWalls" style="padding:4px; font-size:10px; background:#ef444415; border-color:#ef444455; color:#fca5a5; margin-top:4px;">Clear All Barriers</button>
+      </div>
+
+      <div class="control-block">
+        <h3>Active Nodes & Link Routing</h3>
+        <div id="nodeCardsContainer" style="display:flex; flex-direction:column; gap:6px;"></div>
+      </div>
+
+      <!-- Unified Dielectric Barriers & Materials Manager -->
+      <div class="control-block">
+        <h3>Dielectric Barriers & Materials</h3>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <label style="font-size:11px; color:#94a3b8;">Material Type:</label>
+          <select id="materialSelect" class="preset-select" style="width:100%; padding:6px;">
+            <option value="concrete">Concrete (High Permittivity)</option>
+            <option value="glass">Glass (Moderate Dielectric)</option>
+            <option value="wood">Wood (Low Attenuation)</option>
+            <option value="water">Water / Liquid (High Absorption)</option>
+            <option value="custom">+ Create Custom Material...</option>
+          </select>
+
+          <!-- Placement & Dimension Controls for ANY Material -->
+          <div style="display:flex; flex-direction:column; gap:6px; background:#090d15; border:1px solid #334155; padding:8px; border-radius:6px; margin-top:4px;">
+            <div id="customNameField" style="display:none; flex-direction:column; gap:4px;">
+              <label style="font-size:10.5px; color:#94a3b8;">Custom Name:</label>
+              <input type="text" id="customMatName" value="plasma" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;">
+              
+              <div style="display:flex; gap:4px; margin-top:4px;">
+                <label style="flex:1; font-size:10.5px; color:#94a3b8;">Rel. Permittivity: <input type="number" id="customPermittivity" value="15.0" step="1.0" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+                <label style="flex:1; font-size:10.5px; color:#94a3b8;">Rel. Permeability: <input type="number" id="customPermeability" value="1.0" step="0.1" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+              </div>
+              <div style="margin-top:4px;">
+                <label style="font-size:10.5px; color:#94a3b8;">Conductivity: <input type="number" id="customConductivity" value="0.0" step="0.01" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:4px;">
+              <label style="flex:1; font-size:10.5px; color:#94a3b8;">X Min (m): <input type="number" id="customXMin" value="4.0" step="0.2" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+              <label style="flex:1; font-size:10.5px; color:#94a3b8;">X Max (m): <input type="number" id="customXMax" value="5.0" step="0.2" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+            </div>
+            <div style="display:flex; gap:4px;">
+              <label style="flex:1; font-size:10.5px; color:#94a3b8;">Y Min (m): <input type="number" id="customYMin" value="2.0" step="0.2" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+              <label style="flex:1; font-size:10.5px; color:#94a3b8;">Y Max (m): <input type="number" id="customYMax" value="8.0" step="0.2" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+            </div>
+            <label style="font-size:10.5px; color:#94a3b8;">Orientation / Angle (°): <input type="number" id="customAngle" value="0" step="15" style="width:100%; background:#1e293b; border:1px solid #475569; color:#fff; padding:3px; border-radius:3px; font-size:11px;"></label>
+          </div>
+
+          <div class="btn-group" style="margin-top:4px;">
+            <button id="btnAddSelectedMaterial" class="success" style="font-size:10.5px;">Place Material at Coords</button>
+            <button id="btnClearWallsAlt" class="danger" style="font-size:10.5px;">Clear All</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-block">
+        <h3>Live SDR Telemetry (Active Receiver)</h3>
+        <table class="telemetry-table">
+          <tr><td>Sim Time</td><td id="statTime">0.00 ns</td></tr>
+          <tr><td>Bits Evaluated</td><td id="statBits" style="color:#38bdf8; font-weight:700;">0</td></tr>
+          <tr><td>Bit Errors</td><td id="statErrors">0</td></tr>
+          <tr><td>Bit Error Rate (BER)</td><td id="statBER">0.0000</td></tr>
+          <tr><td>Propagation Delay</td><td id="statDelay">0.00 ns</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOATING OSCILLOSCOPE MODAL -->
+  <div id="floatingScope" class="draggable-modal">
+    <div class="modal-header" id="scopeHeader">
+      <div class="modal-title" style="color:#38bdf8;">
+        <span id="scopeProbeLed" style="width:8px; height:8px; border-radius:50%; background:#0ea5e9;"></span>
+        <span id="scopeTitleText">Probe Workbench</span>
+      </div>
+      <button class="icon-btn" id="btnCloseScope">&times;</button>
+    </div>
+    <div class="scope-tabs" id="scopeTabsContainer"></div>
+    <div class="scope-body">
+      <canvas id="scopeCanvas" width="540" height="160"></canvas>
+      <div class="scope-subtext">
+        <span id="scopeChannelName">Channel: Antenna RF</span>
+        <span>Auto-Scaled Normalization</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -6,7 +6,10 @@ from src.wave_solver import WaveSolver
 from src.transmitter import Transmitter
 from src.receiver import Receiver
 from src.link_evaluator import LinkEvaluator
+<<<<<<< Updated upstream
 from src.observation_point import ObservationPoint
+=======
+>>>>>>> Stashed changes
 
 
 def main():
@@ -48,6 +51,7 @@ def main():
         bit_rate=bit_rate,
     )
 
+<<<<<<< Updated upstream
     # Receiver list (Baseline primary receiver is index 0 at x=2.0)
     receivers = [
         Receiver(simulation_space, x=2.0, y=5.0, tuned_frequency=1.0e9, bit_rate=bit_rate),
@@ -78,15 +82,39 @@ def main():
     )
 
     wave_solver = WaveSolver(simulation_space, noise_level=0)
+=======
+    receiver = Receiver(
+        simulation_space=simulation_space,
+        x=2.0,
+        y=5.0,
+        tuned_frequency=1.0e9,
+        bit_rate=bit_rate,
+    )
+
+    # Total filter delay = 4 symbols (TX RRC) + 4 symbols (RX RRC) = 8 symbols
+    evaluator = LinkEvaluator(
+        transmitter=transmitter,
+        receiver=receiver,
+        speed_of_light=c,
+        filter_group_delay_samples=8,
+        warmup_bits=2,
+    )
+    evaluator.sync_receiver_delay()
+
+    wave_solver = WaveSolver(simulation_space)
+>>>>>>> Stashed changes
 
     simulation_space.set_running(True)
 
     plt.ion()
 
+<<<<<<< Updated upstream
     # =============================================================
     # FIGURE LAYOUT (ORIGINAL CLEAN MATPLOTLIB STRUCTURE)
     # =============================================================
 
+=======
+>>>>>>> Stashed changes
     figure = plt.figure(
         figsize=(22, 11),
         constrained_layout=True,
@@ -98,10 +126,14 @@ def main():
         width_ratios=[1.0, 1.5, 1.5],
     )
 
+<<<<<<< Updated upstream
     # =============================================================
     # 1. ELECTROMAGNETIC FIELD (Original dimensions, no clutter)
     # =============================================================
 
+=======
+    # 1. ELECTROMAGNETIC FIELD
+>>>>>>> Stashed changes
     field_axis = figure.add_subplot(grid[0:3, 0])
     image = field_axis.imshow(
         simulation_space.get_current_field().T,
@@ -116,10 +148,14 @@ def main():
     field_axis.set_xlabel("X")
     field_axis.set_ylabel("Y")
 
+<<<<<<< Updated upstream
     # =============================================================
     # STATUS / BER & ENERGY READOUT
     # =============================================================
 
+=======
+    # STATUS / BER READOUT
+>>>>>>> Stashed changes
     status_axis = figure.add_subplot(grid[3, 0])
     status_axis.axis("off")
     ber_text = status_axis.text(
@@ -133,6 +169,7 @@ def main():
         bbox=dict(facecolor="white", alpha=0.8),
     )
 
+<<<<<<< Updated upstream
     # =============================================================
     # TRANSMITTER PLOTS
     # =============================================================
@@ -146,6 +183,17 @@ def main():
     bit_axis.set_ylim(-1.5, 1.5)
 
     # 3. RRC shaped baseband
+=======
+    # 2. ORIGINAL SQUARE-WAVE BPSK SYMBOLS
+    bit_axis = figure.add_subplot(grid[0, 1])
+    bit_line, = bit_axis.plot([], [], drawstyle="steps-post")
+    bit_axis.set_title("Original BPSK Symbol Sequence")
+    bit_axis.set_xlabel("Time (ns)")
+    bit_axis.set_ylabel("Symbol")
+    bit_axis.set_ylim(-1.5, 1.5)
+
+    # 3. RRC SHAPED BASEBAND
+>>>>>>> Stashed changes
     shaped_axis = figure.add_subplot(grid[1, 1])
     shaped_line, = shaped_axis.plot([], [])
     shaped_axis.set_title("RRC Shaped Baseband")
@@ -153,7 +201,11 @@ def main():
     shaped_axis.set_ylabel("Amplitude")
     shaped_axis.set_ylim(-1.5, 1.5)
 
+<<<<<<< Updated upstream
     # 4. RRC-BPSK transmitted signal
+=======
+    # 4. RRC-BPSK TRANSMITTED SIGNAL
+>>>>>>> Stashed changes
     waveform_axis = figure.add_subplot(grid[2, 1])
     bpsk_line, = waveform_axis.plot([], [])
     waveform_axis.set_title("RRC-BPSK Transmitted Signal")
@@ -170,6 +222,7 @@ def main():
         bbox=dict(facecolor="white", alpha=0.8),
     )
 
+<<<<<<< Updated upstream
     # 5. Live FFT Spectrum at Observation Point
     fft_axis = figure.add_subplot(grid[3, 1])
     fft_line, = fft_axis.plot([], [], color="crimson")
@@ -192,11 +245,22 @@ def main():
     received_axis.set_ylabel("Amplitude")
 
     # 7. After band-pass filter
+=======
+    # 5. RECEIVED SIGNAL
+    received_axis = figure.add_subplot(grid[0, 2])
+    received_line, = received_axis.plot([], [])
+    received_axis.set_title("Receiver — Received Signal")
+    received_axis.set_xlabel("Time (ns)")
+    received_axis.set_ylabel("Amplitude")
+
+    # 6. AFTER BAND-PASS FILTER
+>>>>>>> Stashed changes
     filtered_axis = figure.add_subplot(grid[1, 2])
     filtered_line, = filtered_axis.plot([], [])
     filtered_axis.set_title("Receiver — After Band-Pass Filter")
     filtered_axis.set_xlabel("Time (ns)")
     filtered_axis.set_ylabel("Amplitude")
+<<<<<<< Updated upstream
 
     # 8. After mixing
     mixed_axis = figure.add_subplot(grid[2, 2])
@@ -245,6 +309,31 @@ def main():
             ev.evaluate()
 
         observation_point.sample()
+=======
+
+    # 7. AFTER MIXING
+    mixed_axis = figure.add_subplot(grid[2, 2])
+    mixed_line, = mixed_axis.plot([], [])
+    mixed_axis.set_title("Receiver — After Mixing")
+    mixed_axis.set_xlabel("Time (ns)")
+    mixed_axis.set_ylabel("Amplitude")
+
+    # 8. AFTER RRC MATCHED FILTER
+    baseband_axis = figure.add_subplot(grid[3, 2])
+    baseband_line, = baseband_axis.plot([], [])
+    baseband_axis.set_title("Receiver — After RRC Matched Filter")
+    baseband_axis.set_xlabel("Time (ns)")
+    baseband_axis.set_ylabel("Amplitude")
+
+    frame = 0
+
+    while simulation_space.is_running():
+        transmitter.transmit()
+        wave_solver.solve()
+        receiver.receive()
+
+        evaluator.evaluate()
+>>>>>>> Stashed changes
 
         if frame % 1 == 0:
             image.set_data(simulation_space.get_current_field().T)
@@ -273,6 +362,7 @@ def main():
 
                 bit_text.set_text(f"Current Bit : {bit_values[-1]}")
 
+<<<<<<< Updated upstream
             # Observation Point FFT Data
             freqs, amps = observation_point.compute_fft(window_type="hann")
             if len(freqs) > 0:
@@ -294,6 +384,14 @@ def main():
             filtered_values = np.asarray(current_rx.get_filtered_values())
             mixed_values = np.asarray(current_rx.get_mixed_values())
             baseband_values = np.asarray(current_rx.get_baseband_values())
+=======
+            # Receiver Data
+            rx_time_values = np.asarray(receiver.get_observation_times())
+            received_values = np.asarray(receiver.get_received_values())
+            filtered_values = np.asarray(receiver.get_filtered_values())
+            mixed_values = np.asarray(receiver.get_mixed_values())
+            baseband_values = np.asarray(receiver.get_baseband_values())
+>>>>>>> Stashed changes
 
             if len(rx_time_values) > 0:
                 rx_time_ns = rx_time_values * 1e9
@@ -331,11 +429,18 @@ def main():
 
                     axis.set_ylim(value_min - margin, value_max + margin)
 
+<<<<<<< Updated upstream
                 # Performance and Energy Telemetry Readout
                 bit_error_rate = current_ev.get_bit_error_rate()
                 ber_display = (
                     f"{bit_error_rate:.4f}"
                     if current_ev.get_total_bits_compared() > 0
+=======
+                bit_error_rate = evaluator.get_bit_error_rate()
+                ber_display = (
+                    f"{bit_error_rate:.4f}"
+                    if evaluator.get_total_bits_compared() > 0
+>>>>>>> Stashed changes
                     else "n/a"
                 )
 
@@ -345,6 +450,7 @@ def main():
                 ber_text.set_text(
                     f"Selected RX   : #{active_rx[0] + 1} ({current_rx.x:.2f} m, {current_rx.y:.2f} m)\n"
                     f"t = {simulation_space.time * 1e9:.2f} ns\n"
+<<<<<<< Updated upstream
                     f"Bits Compared : {current_ev.get_total_bits_compared()}\n"
                     f"Bit Errors    : {current_ev.get_bit_errors()}\n"
                     f"BER           : {ber_display}\n"
@@ -354,6 +460,13 @@ def main():
                     f"Peak Freq     : {peak_f / 1e9:.3f} GHz\n"
                     f"Peak Mag      : {peak_a:.3e}\n"
                     f"Window Energy : {window_energy:.3e} J"
+=======
+                    f"Bits Compared : {evaluator.get_total_bits_compared()}\n"
+                    f"Bit Errors    : {evaluator.get_bit_errors()}\n"
+                    f"BER           : {ber_display}\n"
+                    f"Est. Delay    : "
+                    f"{evaluator.get_estimated_total_delay_seconds() * 1e9:.2f} ns"
+>>>>>>> Stashed changes
                 )
 
             figure.canvas.draw_idle()
