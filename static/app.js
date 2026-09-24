@@ -25,8 +25,12 @@ ws.binaryType = "arraybuffer";
 function safeSend(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
+  } else if (ws && ws.readyState === WebSocket.CONNECTING) {
+    console.warn("WebSocket is still connecting. Retrying in 500ms...");
+    setTimeout(() => safeSend(payload), 500); // Automatically retries once connected
   } else {
-    console.warn("WebSocket is not open yet.");
+    console.warn("WebSocket is closed. Attempting to reconnect...");
+    // Optional: Trigger reconnect logic here if needed
   }
 }
 
