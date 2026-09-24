@@ -161,3 +161,20 @@ while simulation is running
 The project is currently under active development.
 
 The primary implementation target is the completion of the Phase 1 and Phase 2 features defined for the course project. Features listed under Phase 3 are planned as future enhancements.
+
+
+## Local Installation & Setup
+
+### 1. Clone the Repository
+git clone [https://github.com/SSathiyadhev/interactive-2d-wireless-communication-simulation-and-visualization.git]
+
+###2. Install Dependencies
+pip install -r requirements.txt
+
+###3. Run the Development Server
+uvicorn server:app --reload --host 127.0.0.1 --port 8000
+
+###4. Access the Workbench
+Open your browser and navigate to:
+
+http://127.0.0.1:8000
