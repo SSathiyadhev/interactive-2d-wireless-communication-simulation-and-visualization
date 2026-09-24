@@ -35,16 +35,16 @@ class SimulationSpace:
         """
         Constructor Arguments
         ---------------------
-        width                  : Physical width of the simulation space.
+        width                     : Physical width of the simulation space.
 
-        height                 : Physical height of the simulation space.
+        height                    : Physical height of the simulation space.
 
-        resolution_x           : Number of sample points along the x-axis.
+        resolution_x              : Number of sample points along the x-axis.
 
-        resolution_y           : Number of sample points along the y-axis.
+        resolution_y              : Number of sample points along the y-axis.
 
         dt_stability_multiplier : Multiplier used to determine the
-                                 simulation time step.
+                                   simulation time step.
         """
 
         # Physical dimensions
@@ -118,26 +118,27 @@ class SimulationSpace:
         )
 
     # =============================================================
-    # Helper methods
+    # Helper methods (Corrected with Y-axis Inversion for Canvas Alignment)
     # =============================================================
 
     def _position_to_index(self, x, y):
         """
-        Converts physical coordinates to grid indices.
+        Converts physical coordinates to grid indices with inverted y-axis 
+        to match the frontend canvas coordinate orientation.
         """
 
         i = int(round(x / self.dx))
-        j = int(round(y / self.dy))
+        j = int(round((self.height - y) / self.dy))
 
         return i, j
 
     def _index_to_position(self, i, j):
         """
-        Converts grid indices to physical coordinates.
+        Converts grid indices to physical coordinates with inverted y-axis.
         """
 
         x = i * self.dx
-        y = j * self.dy
+        y = self.height - (j * self.dy)
 
         return x, y
 
@@ -375,7 +376,7 @@ class SimulationSpace:
         if value < MU_0:
             raise ValueError(
                 "Permeability must be greater than or equal to "
-                "vacuum permeability."
+                "vacuum permittivity."
             )
 
         self._mu.fill(value)
@@ -421,9 +422,12 @@ class SimulationSpace:
         i1, j1 = self._position_to_index(x1, y1)
         i2, j2 = self._position_to_index(x2, y2)
 
+        j_min, j_max = min(j1, j2), max(j1, j2)
+        i_min, i_max = min(i1, i2), max(i1, i2)
+
         self._epsilon[
-            i1:i2 + 1,
-            j1:j2 + 1,
+            i_min:i_max + 1,
+            j_min:j_max + 1,
         ] = value
 
     def set_conductivity_rectangle(
@@ -462,9 +466,12 @@ class SimulationSpace:
         i1, j1 = self._position_to_index(x1, y1)
         i2, j2 = self._position_to_index(x2, y2)
 
+        j_min, j_max = min(j1, j2), max(j1, j2)
+        i_min, i_max = min(i1, i2), max(i1, i2)
+
         self._sigma[
-            i1:i2 + 1,
-            j1:j2 + 1,
+            i_min:i_max + 1,
+            j_min:j_max + 1,
         ] = value
 
     def set_permeability_rectangle(
@@ -498,15 +505,18 @@ class SimulationSpace:
         if value < MU_0:
             raise ValueError(
                 "Permeability must be greater than or equal to "
-                "vacuum permeability."
+                "vacuum permittivity."
             )
 
         i1, j1 = self._position_to_index(x1, y1)
         i2, j2 = self._position_to_index(x2, y2)
 
+        j_min, j_max = min(j1, j2), max(j1, j2)
+        i_min, i_max = min(i1, i2), max(i1, i2)
+
         self._mu[
-            i1:i2 + 1,
-            j1:j2 + 1,
+            i_min:i_max + 1,
+            j_min:j_max + 1,
         ] = value
 
     # =============================================================
@@ -578,4 +588,3 @@ class SimulationSpace:
         self.clear()
         self.time = 0.0
         self.running = False
-    

@@ -1,3 +1,7 @@
+/* =============================================================
+   GLOBAL
+   ============================================================= */
+
 * {
   box-sizing: border-box;
 }
@@ -8,8 +12,13 @@ body {
   color: #e6e6e6;
   margin: 0;
   padding: 12px 18px;
-  font-size: 13px; /* Upgraded base font size */
+  font-size: 13px;
 }
+
+
+/* =============================================================
+   PAGE HEADER
+   ============================================================= */
 
 h1 {
   font-size: 17px;
@@ -17,223 +26,671 @@ h1 {
   margin: 0 0 12px 0;
 }
 
+
+/* =============================================================
+   MAIN LAYOUT
+   ============================================================= */
+
 .layout {
   display: flex;
   gap: 18px;
   align-items: flex-start;
 }
 
-/* -------------------------------------------------------------
-   Left: simulation space -- takes up almost the whole width.
-   ------------------------------------------------------------- */
+
+/* =============================================================
+   LEFT: SIMULATION SPACE
+   ============================================================= */
 
 .canvas-panel {
   flex: 1 1 auto;
-  min-width: 0; /* allow flex child to shrink below content size */
+  min-width: 0;
 }
+
+
+/*
+  The displayed canvas is always square.
+
+  IMPORTANT:
+  The actual FDTD resolution is NOT controlled here.
+
+  JavaScript sets:
+      fieldCanvas.width
+      fieldCanvas.height
+
+  according to the backend grid.
+
+  For example:
+      N = 600  -> 600 × 600
+      N = 1000 -> 1000 × 1000
+      N = 1500 -> 1500 × 1500
+
+  CSS only controls how that canvas is displayed.
+*/
 
 .canvas-stack {
   position: relative;
+
   width: 100%;
   aspect-ratio: 1 / 1;
+
   border: 1px solid #3a3d44;
   border-radius: 6px;
+
   overflow: hidden;
+
+  /*
+    Prevent the simulation canvas from becoming taller
+    than the available viewport.
+  */
   max-height: calc(100vh - 90px);
+
+  /*
+    Keep the simulation area square.
+  */
   max-width: calc(100vh - 90px);
+
+  background: #ffffff;
 }
+
+
+/*
+  Both canvases occupy exactly the same displayed area.
+
+  This is important because the field canvas contains the
+  FDTD data while the overlay canvas contains:
+      - TX markers
+      - RX markers
+      - material boundaries
+      - interaction graphics
+*/
 
 .canvas-stack canvas {
   position: absolute;
+
   top: 0;
   left: 0;
+
   width: 100%;
   height: 100%;
+
+  display: block;
 }
+
+
+/*
+  Field canvas.
+
+  Pixelated rendering makes individual FDTD cells easier
+  to see at lower resolutions.
+*/
 
 #fieldCanvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
 
+
+/*
+  Overlay canvas receives mouse interaction.
+*/
+
 #overlayCanvas {
   cursor: crosshair;
 }
 
+
+/* =============================================================
+   CANVAS INFORMATION / HINT
+   ============================================================= */
+
 .hint {
   color: #9a9ea6;
   font-size: 12px;
+
   margin-top: 8px;
+
   max-width: 700px;
 }
 
-/* -------------------------------------------------------------
-   Right: compact, fixed-width sidebar.
-   ------------------------------------------------------------- */
+
+/* =============================================================
+   RIGHT SIDEBAR
+   ============================================================= */
 
 .controls-panel {
-  flex: 0 0 290px; /* Slightly wider sidebar to comfortably fit larger fonts */
+  /*
+    Fixed sidebar width.
+
+    This prevents the controls from changing size when
+    the FDTD resolution changes.
+  */
+  flex: 0 0 290px;
 }
+
+
+/* =============================================================
+   CONTROL GROUP
+   ============================================================= */
 
 .control-group {
   background: #1c1f26;
+
   border: 1px solid #2c2f37;
   border-radius: 8px;
+
   padding: 12px 14px;
+
   margin-bottom: 14px;
 }
 
+
 .control-group h2 {
   font-size: 12px;
+
   text-transform: uppercase;
+
   letter-spacing: 0.05em;
+
   color: #9a9ea6;
+
   margin: 0 0 8px 0;
 }
 
+
+/* =============================================================
+   BUTTONS
+   ============================================================= */
+
 button {
   background: #2c3540;
+
   color: #e6e6e6;
+
   border: 1px solid #3d4753;
+
   border-radius: 5px;
+
   padding: 7px 12px;
+
   margin-right: 6px;
   margin-bottom: 6px;
+
   font-size: 12px;
   font-weight: 600;
+
   cursor: pointer;
+
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
+
 
 button:hover {
   background: #3a4552;
 }
+
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
+/* =============================================================
+   MODE BUTTON
+   ============================================================= */
 
 .mode-btn.active {
   background: #3f6fd1;
   border-color: #3f6fd1;
 }
 
+
+/* =============================================================
+   LABELS
+   ============================================================= */
+
 label {
   display: block;
+
   font-size: 12px;
+
   margin-top: 8px;
   margin-bottom: 3px;
+
   color: #cfd2d8;
 }
 
-input[type="range"], input[type="text"], input[type="number"], select {
+
+/* =============================================================
+   INPUTS
+   ============================================================= */
+
+input[type="range"],
+input[type="text"],
+input[type="number"],
+select {
   width: 100%;
+
   font-size: 12px;
+
   padding: 5px 8px;
+
   background: #101318;
+
   border: 1px solid #2c2f37;
+
   color: #e6e6e6;
+
   border-radius: 4px;
 }
 
+
+input[type="number"]:focus,
+input[type="text"]:focus,
+select:focus {
+  outline: none;
+
+  border-color: #3f6fd1;
+}
+
+
+/*
+  Resolution input.
+
+  There is intentionally NO CSS maximum here.
+
+  The allowed resolution is controlled by the application
+  logic/backend rather than an artificial CSS limit.
+*/
+
+#resolutionInput {
+  width: 100%;
+}
+
+
+/*
+  DT multiplier input.
+*/
+
+#dtMultiplierInput {
+  width: 100%;
+}
+
+
+/* =============================================================
+   STATUS TABLE
+   ============================================================= */
+
 .status-table {
   width: 100%;
+
   font-size: 12px;
+
   border-collapse: collapse;
 }
 
+
 .status-table td {
   padding: 5px 0;
+
   border-bottom: 1px solid #2c2f37;
 }
+
 
 .status-table td:first-child {
   color: #9a9ea6;
 }
 
+
 .status-table td:last-child {
   text-align: right;
+
   font-family: Consolas, monospace;
+
   font-weight: 600;
 }
 
-/* -------------------------------------------------------------
-   Floating panels: appear near whichever marker (TX/RX) was
-   clicked, positioned in JS (top/left set dynamically). Fixed
-   positioning so they float above the canvas/sidebar regardless
-   of page scroll.
-   ------------------------------------------------------------- */
+
+/* =============================================================
+   FDTD CONFIGURATION INFORMATION
+   ============================================================= */
+
+.simulation-config {
+  display: flex;
+  gap: 8px;
+}
+
+
+.simulation-config > div {
+  flex: 1;
+}
+
+
+.config-help {
+  color: #777d87;
+
+  font-size: 10px;
+
+  line-height: 1.4;
+
+  margin-top: 5px;
+}
+
+
+/* =============================================================
+   NODE CARDS
+   ============================================================= */
+
+.node-card {
+  background: #181b21;
+
+  border: 1px solid #2c2f37;
+
+  border-radius: 6px;
+
+  padding: 8px 10px;
+
+  margin-bottom: 6px;
+}
+
+
+.node-card:hover {
+  border-color: #3f6fd1;
+}
+
+
+/* =============================================================
+   MATERIAL CONTROLS
+   ============================================================= */
+
+.material-box {
+  background: #15181e;
+
+  border: 1px solid #2c2f37;
+
+  border-radius: 6px;
+
+  padding: 8px;
+}
+
+
+.material-row {
+  display: flex;
+  gap: 6px;
+}
+
+
+.material-row > label {
+  flex: 1;
+}
+
+
+/* =============================================================
+   FLOATING PANELS
+   ============================================================= */
+
+/*
+  Floating panels appear near the TX/RX marker that was clicked.
+
+  JavaScript controls:
+      top
+      left
+      hidden/visible state
+*/
 
 .floating-panel {
   position: fixed;
+
   width: 310px;
+
   max-height: 80vh;
+
   overflow-y: auto;
+
   background: #1c1f26;
+
   border: 1px solid #3f6fd1;
+
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.5);
+
   z-index: 50;
+
   font-size: 12px;
 }
+
 
 .floating-panel[hidden] {
   display: none;
 }
 
+
+/* =============================================================
+   FLOATING PANEL HEADER
+   ============================================================= */
+
 .floating-panel-header {
   display: flex;
+
   justify-content: space-between;
+
   align-items: center;
+
   padding: 9px 12px;
+
   background: #22262f;
+
   border-bottom: 1px solid #2c2f37;
+
   border-radius: 8px 8px 0 0;
+
   font-size: 13px;
+
   font-weight: 600;
+
   cursor: default;
 }
 
+
+/* =============================================================
+   PANEL CLOSE BUTTON
+   ============================================================= */
+
 .panel-close {
   background: none;
+
   border: none;
+
   color: #9a9ea6;
+
   font-size: 18px;
+
   line-height: 1;
+
   padding: 0 4px;
+
   margin: 0;
+
   cursor: pointer;
 }
 
+
 .panel-close:hover {
   color: #e6e6e6;
+
   background: none;
 }
 
+
+/* =============================================================
+   FLOATING PANEL BODY
+   ============================================================= */
+
 .floating-panel-body {
   padding: 10px 12px;
+
   display: flex;
+
   flex-direction: column;
+
   gap: 10px;
 }
 
+
+/* =============================================================
+   CHART CONTAINER
+   ============================================================= */
+
 .chart-box {
   background: #101318;
+
   border: 1px solid #2c2f37;
+
   border-radius: 6px;
+
   padding: 8px 10px;
 }
 
+
 .chart-title {
   font-size: 12px;
+
   color: #cfd2d8;
+
   margin-bottom: 5px;
+
   font-weight: 600;
 }
 
+
+/* =============================================================
+   CHART CANVAS
+   ============================================================= */
+
 canvas.chart {
   width: 100%;
+
   height: 90px;
+
   display: block;
+
   background: #0b0d11;
+
   border-radius: 4px;
 }
 
+
+/* =============================================================
+   PANEL STATISTICS
+   ============================================================= */
+
 .panel-stats {
   background: #1c1f26;
+
+  border-radius: 5px;
+
+  padding: 6px 8px;
+}
+
+
+/* =============================================================
+   SCROLLBARS
+   ============================================================= */
+
+.controls-panel::-webkit-scrollbar,
+.floating-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+
+.controls-panel::-webkit-scrollbar-track,
+.floating-panel::-webkit-scrollbar-track {
+  background: #101318;
+}
+
+
+.controls-panel::-webkit-scrollbar-thumb,
+.floating-panel::-webkit-scrollbar-thumb {
+  background: #3a3f48;
+
+  border-radius: 4px;
+}
+
+
+.controls-panel::-webkit-scrollbar-thumb:hover,
+.floating-panel::-webkit-scrollbar-thumb:hover {
+  background: #4a5260;
+}
+
+
+/* =============================================================
+   RESPONSIVE LAYOUT
+   ============================================================= */
+
+@media (max-width: 900px) {
+
+  body {
+    padding: 10px;
+  }
+
+
+  .layout {
+    flex-direction: column;
+  }
+
+
+  .canvas-panel {
+    width: 100%;
+  }
+
+
+  .canvas-stack {
+    width: 100%;
+
+    max-width: none;
+
+    max-height: none;
+  }
+
+
+  .controls-panel {
+    width: 100%;
+
+    flex: none;
+  }
+
+
+  .floating-panel {
+    width: min(310px, calc(100vw - 20px));
+  }
+
+}
+
+
+/* =============================================================
+   VERY SMALL SCREENS
+   ============================================================= */
+
+@media (max-width: 500px) {
+
+  h1 {
+    font-size: 15px;
+  }
+
+
+  .simulation-config {
+    flex-direction: column;
+  }
+
+
+  .material-row {
+    flex-direction: column;
+  }
+
 }
