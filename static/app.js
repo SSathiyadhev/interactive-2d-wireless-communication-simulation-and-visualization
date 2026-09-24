@@ -1,29 +1,5 @@
 // static/app.js - Complete Full-Stack FDTD Frontend with Stable Node Cards & Live Telemetry
 
-const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
-ws.binaryType = "arraybuffer";
-
-ws.onopen = () => {
-  console.log("WebSocket connection established successfully!");
-};
-
-ws.onerror = (error) => {
-  console.error("WebSocket error observed:", error);
-};
-
-ws.onclose = (event) => {
-  console.warn(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
-};
-
-function safeSend(payload) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-  } else {
-    console.warn("WebSocket is not open yet. Current state:", ws ? ws.readyState : "No socket");
-  }
-}
-
 const emCanvas = document.getElementById("emCanvas");
 const emCtx = emCanvas ? emCanvas.getContext("2d") : null;
 const imgData = emCtx ? emCtx.createImageData(600, 600) : null;
@@ -42,65 +18,96 @@ let activeProbeId = 0;
 let activeStage = "symbols";
 let lastNodeSignature = "";
 
-ws.onmessage = (event) => {
-  if (typeof event.data === "string") {
-    const data = JSON.parse(event.data);
-    latestTelemetry = data;
+let ws;
 
-    const btnStart = document.getElementById("btnStart");
-    const btnPause = document.getElementById("btnPause");
-    if (btnStart && btnPause) {
-      if (data.running) {
-        btnStart.classList.add("active");
-        btnPause.classList.remove("active");
-      } else {
-        btnPause.classList.add("active");
-        btnStart.classList.remove("active");
-      }
-    }
+function connectWebSocket() {
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
+  ws.binaryType = "arraybuffer";
 
-    document.getElementById("statTime").textContent = `${data.time_ns.toFixed(2)} ns`;
-    document.getElementById("statBits").textContent = data.bits_compared;
-    document.getElementById("statErrors").textContent = data.bit_errors;
-    document.getElementById("statBER").textContent = Number(data.ber).toFixed(4);
-    document.getElementById("statDelay").textContent = `${data.est_delay_ns.toFixed(2)} ns`;
+  ws.onopen = () => {
+    console.log("WebSocket connection established successfully!");
+  };
 
-    renderNodeCards(data);
+  ws.onerror = (error) => {
+    console.error("WebSocket error observed:", error);
+  };
 
-    const scopeModal = document.getElementById("floatingScope");
-    if (scopeModal && scopeModal.style.display === "flex") {
-      renderInstrumentView(activeStage);
-    }
-  } else {
-    if (!emCtx || !imgData) return;
-    const bytes = new Uint8Array(event.data);
-    let p = 0;
-    for (let i = 0; i < bytes.length; i++) {
-      const v = bytes[i];
-      if (v === 0) {
-        imgData.data[p] = 30; imgData.data[p + 1] = 41; imgData.data[p + 2] = 59;
-      } else {
-        const diff = v - 128;
-        if (diff >= 0) {
-          imgData.data[p] = 255;
-          imgData.data[p + 1] = Math.max(0, 255 - diff * 2);
-          imgData.data[p + 2] = Math.max(0, 255 - diff * 2);
+  ws.onclose = (event) => {
+    console.warn(`WebSocket closed. Code: ${event.code}. Reconnecting in 2 seconds...`);
+    setTimeout(connectWebSocket, 2000);
+  };
+
+  ws.onmessage = (event) => {
+    if (typeof event.data === "string") {
+      const data = JSON.parse(event.data);
+      latestTelemetry = data;
+
+      const btnStart = document.getElementById("btnStart");
+      const btnPause = document.getElementById("btnPause");
+      if (btnStart && btnPause) {
+        if (data.running) {
+          btnStart.classList.add("active");
+          btnPause.classList.remove("active");
         } else {
-          const neg = -diff;
-          imgData.data[p] = Math.max(0, 255 - neg * 2);
-          imgData.data[p + 1] = Math.max(0, 255 - neg * 2);
-          imgData.data[p + 2] = 255;
+          btnPause.classList.add("active");
+          btnStart.classList.remove("active");
         }
       }
-      imgData.data[p + 3] = 255;
-      p += 4;
-    }
-    emCtx.putImageData(imgData, 0, 0);
 
-    drawMaterialBoundaries();
-    drawNodeMarkers();
+      document.getElementById("statTime").textContent = `${data.time_ns.toFixed(2)} ns`;
+      document.getElementById("statBits").textContent = data.bits_compared;
+      document.getElementById("statErrors").textContent = data.bit_errors;
+      document.getElementById("statBER").textContent = Number(data.ber).toFixed(4);
+      document.getElementById("statDelay").textContent = `${data.est_delay_ns.toFixed(2)} ns`;
+
+      renderNodeCards(data);
+
+      const scopeModal = document.getElementById("floatingScope");
+      if (scopeModal && scopeModal.style.display === "flex") {
+        renderInstrumentView(activeStage);
+      }
+    } else {
+      if (!emCtx || !imgData) return;
+      const bytes = new Uint8Array(event.data);
+      let p = 0;
+      for (let i = 0; i < bytes.length; i++) {
+        const v = bytes[i];
+        if (v === 0) {
+          imgData.data[p] = 30; imgData.data[p + 1] = 41; imgData.data[p + 2] = 59;
+        } else {
+          const diff = v - 128;
+          if (diff >= 0) {
+            imgData.data[p] = 255;
+            imgData.data[p + 1] = Math.max(0, 255 - diff * 2);
+            imgData.data[p + 2] = Math.max(0, 255 - diff * 2);
+          } else {
+            const neg = -diff;
+            imgData.data[p] = Math.max(0, 255 - neg * 2);
+            imgData.data[p + 1] = Math.max(0, 255 - neg * 2);
+            imgData.data[p + 2] = 255;
+          }
+        }
+        imgData.data[p + 3] = 255;
+        p += 4;
+      }
+      emCtx.putImageData(imgData, 0, 0);
+
+      drawMaterialBoundaries();
+      drawNodeMarkers();
+    }
+  };
+}
+
+connectWebSocket();
+
+function safeSend(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+  } else {
+    console.warn("WebSocket is not open yet. Current state:", ws ? ws.readyState : "No socket");
   }
-};
+}
 
 function toPxX(val) { return (val / 10.0) * 600.0; }
 function toPxY(val) { return 600.0 - (val / 10.0) * 600.0; }
