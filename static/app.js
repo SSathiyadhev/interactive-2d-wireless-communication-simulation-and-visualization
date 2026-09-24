@@ -18,81 +18,96 @@ let activeProbeId = 0;
 let activeStage = "symbols";
 let lastNodeSignature = "";
 
-const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
-ws.binaryType = "arraybuffer";
+let ws;
+
+function connectWebSocket() {
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => {
+    console.log("WebSocket connection established successfully!");
+  };
+
+  ws.onerror = (error) => {
+    console.error("WebSocket error observed:", error);
+  };
+
+  ws.onclose = (event) => {
+    console.warn(`WebSocket closed. Code: ${event.code}. Reconnecting in 2 seconds...`);
+    setTimeout(connectWebSocket, 2000);
+  };
+
+  ws.onmessage = (event) => {
+    if (typeof event.data === "string") {
+      const data = JSON.parse(event.data);
+      latestTelemetry = data;
+
+      const btnStart = document.getElementById("btnStart");
+      const btnPause = document.getElementById("btnPause");
+      if (btnStart && btnPause) {
+        if (data.running) {
+          btnStart.classList.add("active");
+          btnPause.classList.remove("active");
+        } else {
+          btnPause.classList.add("active");
+          btnStart.classList.remove("active");
+        }
+      }
+
+      document.getElementById("statTime").textContent = `${data.time_ns.toFixed(2)} ns`;
+      document.getElementById("statBits").textContent = data.bits_compared;
+      document.getElementById("statErrors").textContent = data.bit_errors;
+      document.getElementById("statBER").textContent = Number(data.ber).toFixed(4);
+      document.getElementById("statDelay").textContent = `${data.est_delay_ns.toFixed(2)} ns`;
+
+      renderNodeCards(data);
+
+      const scopeModal = document.getElementById("floatingScope");
+      if (scopeModal && scopeModal.style.display === "flex") {
+        renderInstrumentView(activeStage);
+      }
+    } else {
+      if (!emCtx || !imgData) return;
+      const bytes = new Uint8Array(event.data);
+      let p = 0;
+      for (let i = 0; i < bytes.length; i++) {
+        const v = bytes[i];
+        if (v === 0) {
+          imgData.data[p] = 30; imgData.data[p + 1] = 41; imgData.data[p + 2] = 59;
+        } else {
+          const diff = v - 128;
+          if (diff >= 0) {
+            imgData.data[p] = 255;
+            imgData.data[p + 1] = Math.max(0, 255 - diff * 2);
+            imgData.data[p + 2] = Math.max(0, 255 - diff * 2);
+          } else {
+            const neg = -diff;
+            imgData.data[p] = Math.max(0, 255 - neg * 2);
+            imgData.data[p + 1] = Math.max(0, 255 - neg * 2);
+            imgData.data[p + 2] = 255;
+          }
+        }
+        imgData.data[p + 3] = 255;
+        p += 4;
+      }
+      emCtx.putImageData(imgData, 0, 0);
+
+      drawMaterialBoundaries();
+      drawNodeMarkers();
+    }
+  };
+}
+
+connectWebSocket();
 
 function safeSend(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
-  } else if (ws && ws.readyState === WebSocket.CONNECTING) {
-    console.warn("WebSocket is still connecting. Retrying in 500ms...");
-    setTimeout(() => safeSend(payload), 500); // Automatically retries once connected
   } else {
-    console.warn("WebSocket is closed. Attempting to reconnect...");
-    // Optional: Trigger reconnect logic here if needed
+    console.warn("WebSocket is not open yet. Current state:", ws ? ws.readyState : "No socket");
   }
 }
-
-ws.onmessage = (event) => {
-  if (typeof event.data === "string") {
-    const data = JSON.parse(event.data);
-    latestTelemetry = data;
-
-    const btnStart = document.getElementById("btnStart");
-    const btnPause = document.getElementById("btnPause");
-    if (btnStart && btnPause) {
-      if (data.running) {
-        btnStart.classList.add("active");
-        btnPause.classList.remove("active");
-      } else {
-        btnPause.classList.add("active");
-        btnStart.classList.remove("active");
-      }
-    }
-
-    document.getElementById("statTime").textContent = `${data.time_ns.toFixed(2)} ns`;
-    document.getElementById("statBits").textContent = data.bits_compared;
-    document.getElementById("statErrors").textContent = data.bit_errors;
-    document.getElementById("statBER").textContent = Number(data.ber).toFixed(4);
-    document.getElementById("statDelay").textContent = `${data.est_delay_ns.toFixed(2)} ns`;
-
-    renderNodeCards(data);
-
-    const scopeModal = document.getElementById("floatingScope");
-    if (scopeModal && scopeModal.style.display === "flex") {
-      renderInstrumentView(activeStage);
-    }
-  } else {
-    if (!emCtx || !imgData) return;
-    const bytes = new Uint8Array(event.data);
-    let p = 0;
-    for (let i = 0; i < bytes.length; i++) {
-      const v = bytes[i];
-      if (v === 0) {
-        imgData.data[p] = 30; imgData.data[p + 1] = 41; imgData.data[p + 2] = 59;
-      } else {
-        const diff = v - 128;
-        if (diff >= 0) {
-          imgData.data[p] = 255;
-          imgData.data[p + 1] = Math.max(0, 255 - diff * 2);
-          imgData.data[p + 2] = Math.max(0, 255 - diff * 2);
-        } else {
-          const neg = -diff;
-          imgData.data[p] = Math.max(0, 255 - neg * 2);
-          imgData.data[p + 1] = Math.max(0, 255 - neg * 2);
-          imgData.data[p + 2] = 255;
-        }
-      }
-      imgData.data[p + 3] = 255;
-      p += 4;
-    }
-    emCtx.putImageData(imgData, 0, 0);
-
-    drawMaterialBoundaries();
-    drawNodeMarkers();
-  }
-};
 
 function toPxX(val) { return (val / 10.0) * 600.0; }
 function toPxY(val) { return 600.0 - (val / 10.0) * 600.0; }
@@ -175,7 +190,6 @@ function renderNodeCards(data) {
   const container = document.getElementById("nodeCardsContainer");
   if (!container) return;
 
-  // Prevent re-rendering while a dropdown menu is open/focused
   if (document.activeElement && document.activeElement.classList.contains("link-select")) {
     return;
   }
