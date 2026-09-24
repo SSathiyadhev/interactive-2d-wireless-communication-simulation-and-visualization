@@ -1,5 +1,29 @@
 // static/app.js - Complete Full-Stack FDTD Frontend with Stable Node Cards & Live Telemetry
 
+const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
+ws.binaryType = "arraybuffer";
+
+ws.onopen = () => {
+  console.log("WebSocket connection established successfully!");
+};
+
+ws.onerror = (error) => {
+  console.error("WebSocket error observed:", error);
+};
+
+ws.onclose = (event) => {
+  console.warn(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
+};
+
+function safeSend(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+  } else {
+    console.warn("WebSocket is not open yet. Current state:", ws ? ws.readyState : "No socket");
+  }
+}
+
 const emCanvas = document.getElementById("emCanvas");
 const emCtx = emCanvas ? emCanvas.getContext("2d") : null;
 const imgData = emCtx ? emCtx.createImageData(600, 600) : null;
@@ -17,22 +41,6 @@ let activeProbeType = "tx";
 let activeProbeId = 0;
 let activeStage = "symbols";
 let lastNodeSignature = "";
-
-const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
-ws.binaryType = "arraybuffer";
-
-function safeSend(payload) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-  } else if (ws && ws.readyState === WebSocket.CONNECTING) {
-    console.warn("WebSocket is still connecting. Retrying in 500ms...");
-    setTimeout(() => safeSend(payload), 500); // Automatically retries once connected
-  } else {
-    console.warn("WebSocket is closed. Attempting to reconnect...");
-    // Optional: Trigger reconnect logic here if needed
-  }
-}
 
 ws.onmessage = (event) => {
   if (typeof event.data === "string") {
@@ -175,7 +183,6 @@ function renderNodeCards(data) {
   const container = document.getElementById("nodeCardsContainer");
   if (!container) return;
 
-  // Prevent re-rendering while a dropdown menu is open/focused
   if (document.activeElement && document.activeElement.classList.contains("link-select")) {
     return;
   }
