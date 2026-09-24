@@ -170,17 +170,17 @@ git clone [https://github.com/SSathiyadhev/interactive-2d-wireless-communication
 ---
 
 ---
-###2. Install Dependencies
+2. Install Dependencies
 pip install -r requirements.txt
 ---
 
 ---
-###3. Run the Development Server
+3. Run the Development Server
 uvicorn server:app --reload --host 127.0.0.1 --port 8000
 ---
 
 ---
-###4. Access the Workbench
+4. Access the Workbench
 Open your browser and navigate to:
 
 http://127.0.0.1:8000
