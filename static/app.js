@@ -1,4 +1,4 @@
-// static/app.js - Complete FDTD Workbench Frontend
+// static/app.js - Complete FDTD Workbench Frontend with Safe Binary Canvas Rendering
 
 const emCanvas = document.getElementById("emCanvas");
 const emCtx = emCanvas ? emCanvas.getContext("2d") : null;
@@ -33,98 +33,18 @@ let customMaterialConfig = {
   conductivity: 0.0
 };
 
-let ws;
-
-function connectWebSocket() {
-  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
-  ws.binaryType = "arraybuffer";
-
-  ws.onopen = () => {
-    console.log("WebSocket connection established successfully!");
-  };
-
-  ws.onerror = (error) => {
-    console.error("WebSocket error observed:", error);
-  };
-
-  ws.onclose = (event) => {
-    console.warn(`WebSocket closed. Code: ${event.code}. Reconnecting in 2 seconds...`);
-    setTimeout(connectWebSocket, 2000);
-  };
-
-  ws.onmessage = (event) => {
-    if (typeof event.data === "string") {
-      const data = JSON.parse(event.data);
-      latestTelemetry = data;
-
-      const btnStart = document.getElementById("btnStart");
-      const btnPause = document.getElementById("btnPause");
-      if (btnStart && btnPause) {
-        if (data.running) {
-          btnStart.classList.add("active");
-          btnPause.classList.remove("active");
-        } else {
-          btnPause.classList.add("active");
-          btnStart.classList.remove("active");
-        }
-      }
-
-      document.getElementById("statTime").textContent = `${data.time_ns.toFixed(2)} ns`;
-      document.getElementById("statBits").textContent = data.bits_compared;
-      document.getElementById("statErrors").textContent = data.bit_errors;
-      document.getElementById("statBER").textContent = Number(data.ber).toFixed(4);
-      document.getElementById("statDelay").textContent = `${data.est_delay_ns.toFixed(2)} ns`;
-
-      renderNodeCards(data);
-
-      const scopeModal = document.getElementById("floatingScope");
-      if (scopeModal && scopeModal.style.display === "flex") {
-        renderInstrumentView(activeStage);
-      }
-    } else {
-      if (!emCtx || !imgData) return;
-      const bytes = new Uint8Array(event.data);
-      let p = 0;
-      for (let i = 0; i < bytes.length; i++) {
-        const v = bytes[i];
-        if (v === 0) {
-          imgData.data[p] = 30; imgData.data[p + 1] = 41; imgData.data[p + 2] = 59;
-        } else {
-          const diff = v - 128;
-          if (diff >= 0) {
-            imgData.data[p] = 255;
-            imgData.data[p + 1] = Math.max(0, 255 - diff * 2);
-            imgData.data[p + 2] = Math.max(0, 255 - diff * 2);
-          } else {
-            const neg = -diff;
-            imgData.data[p] = Math.max(0, 255 - neg * 2);
-            imgData.data[p + 1] = Math.max(0, 255 - neg * 2);
-            imgData.data[p + 2] = 255;
-          }
-        }
-        imgData.data[p + 3] = 255;
-        p += 4;
-      }
-      emCtx.putImageData(imgData, 0, 0);
-
-      drawMaterialBoundaries();
-      drawNodeMarkers();
-    }
-  };
-}
-
-connectWebSocket();
+const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sim`);
+ws.binaryType = "arraybuffer";
 
 function safeSend(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
   } else {
-    console.warn("WebSocket is not open yet. Current state:", ws ? ws.readyState : "No socket");
+    console.warn("WebSocket is not open yet.");
   }
 }
 
-<<<<<<< HEAD
 ws.onmessage = (event) => {
   if (typeof event.data === "string") {
     const data = JSON.parse(event.data);
@@ -159,23 +79,23 @@ ws.onmessage = (event) => {
   } else {
     if (!emCtx || !imgData) return;
     const bytes = new Uint8Array(event.data);
+    
+    // Safety check: ensure byte length matches image buffer size
+    if (bytes.length !== imgData.data.length / 4) return;
+
     let p = 0;
     for (let i = 0; i < bytes.length; i++) {
       const v = bytes[i];
-      if (v === 0) {
-        imgData.data[p] = 30; imgData.data[p + 1] = 41; imgData.data[p + 2] = 59;
+      const diff = v - 128;
+      if (diff >= 0) {
+        imgData.data[p] = 255;
+        imgData.data[p + 1] = Math.max(0, 255 - diff * 2);
+        imgData.data[p + 2] = Math.max(0, 255 - diff * 2);
       } else {
-        const diff = v - 128;
-        if (diff >= 0) {
-          imgData.data[p] = 255;
-          imgData.data[p + 1] = Math.max(0, 255 - diff * 2);
-          imgData.data[p + 2] = Math.max(0, 255 - diff * 2);
-        } else {
-          const neg = -diff;
-          imgData.data[p] = Math.max(0, 255 - neg * 2);
-          imgData.data[p + 1] = Math.max(0, 255 - neg * 2);
-          imgData.data[p + 2] = 255;
-        }
+        const neg = -diff;
+        imgData.data[p] = Math.max(0, 255 - neg * 2);
+        imgData.data[p + 1] = Math.max(0, 255 - neg * 2);
+        imgData.data[p + 2] = 255;
       }
       imgData.data[p + 3] = 255;
       p += 4;
@@ -195,12 +115,6 @@ function toPxX(x) { return (x / SIM_WIDTH) * fieldWidth; }
 function toPxY(y) { return fieldHeight - (y / SIM_HEIGHT) * fieldHeight; }
 function toMetersX(px) { return (px / fieldWidth) * SIM_WIDTH; }
 function toMetersY(py) { return ((fieldHeight - py) / fieldHeight) * SIM_HEIGHT; }
-=======
-function toPxX(val) { return (val / 10.0) * 600.0; }
-function toPxY(val) { return 600.0 - (val / 10.0) * 600.0; }
-function toMetersX(px) { return (px / 600.0) * 10.0; }
-function toMetersY(py) { return ((600.0 - py) / 600.0) * 10.0; }
->>>>>>> dc6635bd7b63e8c7fb7fbca652df61a068474d0c
 
 function drawMaterialBoundaries() {
   if (!latestTelemetry || !latestTelemetry.materials) return;
@@ -307,13 +221,9 @@ function renderLinkEvaluators(data) {
   const telemetryBlock = document.getElementById("linkTelemetryBlock");
   if (!container || !block) return;
 
-<<<<<<< HEAD
   if (telemetryBlock) telemetryBlock.style.display = "none";
 
   if (document.activeElement && (document.activeElement.classList.contains("link-tx") || document.activeElement.classList.contains("link-rx"))) {
-=======
-  if (document.activeElement && document.activeElement.classList.contains("link-select")) {
->>>>>>> dc6635bd7b63e8c7fb7fbca652df61a068474d0c
     return;
   }
 
@@ -1049,7 +959,6 @@ if (btnAddRx) {
   };
 }
 
-<<<<<<< HEAD
 const btnAddObs = document.getElementById("btnAddObsPointBtn");
 if (btnAddObs) {
   btnAddObs.onclick = () => {
@@ -1078,13 +987,3 @@ if (scenarioSelect) {
     }
   };
 }
-=======
-document.getElementById("scenarioSelect").onchange = (e) => {
-  const val = e.target.value;
-  if (val === "los") {
-    safeSend({ type: "clear_walls" });
-  } else if (val === "concrete_wall") {
-    safeSend({ type: "add_material", name: "concrete", x_min: 4.8, x_max: 5.2, y_min: 2.0, y_max: 8.0 });
-  }
-};
->>>>>>> dc6635bd7b63e8c7fb7fbca652df61a068474d0c
