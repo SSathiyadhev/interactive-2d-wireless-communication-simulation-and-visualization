@@ -87,3 +87,4 @@ class LinkEvaluator:
         self.total_bits_compared = 0
         self.bit_errors = 0
         self.last_evaluated_idx = -1
+    

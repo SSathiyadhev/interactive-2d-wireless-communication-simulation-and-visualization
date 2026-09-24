@@ -60,6 +60,10 @@ class Receiver:
         self.filtered_values = deque(maxlen=max_samples)
         self.mixed_values = deque(maxlen=max_samples)
         self.baseband_values = deque(maxlen=max_samples)
+        self.bit_values = deque(maxlen=max_samples)
+
+        # Currently decoded bit
+        self.current_bit = None
 
         fft_samples = max(
             8,
@@ -115,14 +119,56 @@ class Receiver:
 
     def _update_internal_filter_delays(self):
         """
-        Total RRC matched filter group delay is 8 symbol periods (16 ns):
-        4 symbols at TX (pulse shaping) + 4 symbols at RX (matched filter).
-        """
-        # 8 symbols of RRC filter delay
-        rrc_pipeline_delay = float(self.rrc_span) * (1.0 / self.bit_rate)
+        Calculates the total receiver symbol-sampling delay.
 
-        self._total_delay_seconds = self._propagation_delay_seconds + rrc_pipeline_delay
-        self._total_delay_samples = int(round(self._total_delay_seconds / self.simulation_space.dt))
+        Includes:
+            - propagation delay
+            - TX + RX RRC delay
+            - receiver BPF group delay at the tuned carrier frequency
+        """
+
+        # ---------------------------------------------------------
+        # TX RRC + RX RRC
+        # ---------------------------------------------------------
+        # Each RRC has span/2 symbol periods of group delay.
+        # Two RRC filters therefore give span symbol periods.
+        rrc_pipeline_delay = (
+            float(self.rrc_span)
+            / self.bit_rate
+        )
+
+        # ---------------------------------------------------------
+        # Receiver RF BPF
+        # ---------------------------------------------------------
+        # The receiver is tuned to this carrier frequency, so use
+        # the BPF group delay at the carrier.
+        bpf_delay_samples = (
+            self.bandpass_filter.get_group_delay_samples(
+                self.tuned_frequency
+            )
+        )
+
+        bpf_delay_seconds = (
+            bpf_delay_samples
+            * self.simulation_space.dt
+        )
+
+        # ---------------------------------------------------------
+        # Total delay
+        # ---------------------------------------------------------
+        self._total_delay_seconds = (
+            self._propagation_delay_seconds
+            + rrc_pipeline_delay
+            + bpf_delay_seconds
+        )
+
+        self._total_delay_samples = int(
+            round(
+                self._total_delay_seconds
+                / self.simulation_space.dt
+            )
+        )
+        
     def set_estimated_propagation_delay(self, prop_delay_seconds):
         """Allows LinkEvaluator to pass channel delay for symbol-clock alignment."""
         self._propagation_delay_seconds = float(prop_delay_seconds)
@@ -159,6 +205,7 @@ class Receiver:
         Flipped to account for 180-degree carrier phase / coordinate sign inversion.
         """
         decoded_bit = 1 if baseband_value >= 0.0 else 0
+        self.current_bit = decoded_bit
         self.demodulated_bits.append(decoded_bit)
 
     def receive(self):
@@ -176,6 +223,9 @@ class Receiver:
         # Slice bits at symbol peaks
         if self._is_symbol_sampling_instant(current_time):
             self._decide_bit(baseband_value)
+
+        # Store the latest decoded bit for every simulation timestep
+        self.bit_values.append(self.current_bit)
 
     def _design_filter(self):
         self.bandpass_filter.set_parameters(
@@ -283,4 +333,6 @@ class Receiver:
 
     def get_filtered_fft_values(self):
         return list(self.filtered_fft_values)
-    
+
+    def get_bit_values(self):
+        return list(self.bit_values)
