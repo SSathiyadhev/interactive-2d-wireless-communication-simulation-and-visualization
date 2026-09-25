@@ -14,11 +14,6 @@ let fieldWidth = 1000;
 let fieldHeight = 1000;
 let imgData = emCtx ? emCtx.createImageData(fieldWidth, fieldHeight) : null;
 
-let fieldRenderCanvas = document.createElement("canvas");
-fieldRenderCanvas.width = fieldWidth;
-fieldRenderCanvas.height = fieldHeight;
-let fieldRenderCtx = fieldRenderCanvas.getContext("2d");
-
 let isMouseDownOnCanvas = false;
 let startMousePos = { x: 0, y: 0 };
 let draggedNode = null;
@@ -52,22 +47,17 @@ ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
     latestTelemetry = data;
 
-  if (data.grid_width && data.grid_height) {
-    if (data.grid_width !== fieldWidth || data.grid_height !== fieldHeight) {
-      fieldWidth = data.grid_width;
-      fieldHeight = data.grid_height;
-
-      if (emCtx) {
-        imgData = emCtx.createImageData(fieldWidth, fieldHeight);
-
-        fieldRenderCanvas.width = fieldWidth;
-        fieldRenderCanvas.height = fieldHeight;
-
-        emCanvas.width = fieldWidth;
-        emCanvas.height = fieldHeight;
+    if (data.grid_width && data.grid_height) {
+      if (data.grid_width !== fieldWidth || data.grid_height !== fieldHeight) {
+        fieldWidth = data.grid_width;
+        fieldHeight = data.grid_height;
+        if (emCtx) {
+          imgData = emCtx.createImageData(fieldWidth, fieldHeight);
+          emCanvas.width = fieldWidth;
+          emCanvas.height = fieldHeight;
+        }
       }
     }
-  }
 
     const btnStart = document.getElementById("btnStart");
     const btnPause = document.getElementById("btnPause");
@@ -105,43 +95,7 @@ ws.onmessage = (event) => {
       imgData.data[p + 3] = 255;
       p += 4;
     }
-    fieldRenderCtx.putImageData(imgData, 0, 0);
-
-    const layer = getAbsorbingLayerThickness();
-    const computationalWidth = getComputationalWidth();
-    const computationalHeight = getComputationalHeight();
-
-    const cropX = Math.round(
-      (layer / computationalWidth) * fieldWidth
-    );
-
-    const cropY = Math.round(
-      (layer / computationalHeight) * fieldHeight
-    );
-
-    const cropWidth = Math.round(
-      (SIM_WIDTH / computationalWidth) * fieldWidth
-    );
-
-    const cropHeight = Math.round(
-      (SIM_HEIGHT / computationalHeight) * fieldHeight
-    );
-
-    // Render only the 10 × 10 m physical domain,
-    // scaling it to fill the displayed canvas.
-    emCtx.clearRect(0, 0, emCanvas.width, emCanvas.height);
-
-    emCtx.drawImage(
-      fieldRenderCanvas,
-      cropX,
-      cropY,
-      cropWidth,
-      cropHeight,
-      0,
-      0,
-      emCanvas.width,
-      emCanvas.height
-    );
+    emCtx.putImageData(imgData, 0, 0);
 
     drawMaterialBoundaries();
     drawNodeMarkers();
@@ -167,19 +121,25 @@ function getComputationalHeight() {
 }
 
 function toPxX(x) {
-  return (x / SIM_WIDTH) * fieldWidth;
+  const layer = getAbsorbingLayerThickness();
+  return ((x + layer) / getComputationalWidth()) * fieldWidth;
 }
 
 function toPxY(y) {
-  return fieldHeight - (y / SIM_HEIGHT) * fieldHeight;
+  const layer = getAbsorbingLayerThickness();
+  return fieldHeight
+    - ((y + layer) / getComputationalHeight()) * fieldHeight;
 }
 
 function toMetersX(px) {
-  return (px / fieldWidth) * SIM_WIDTH;
+  const layer = getAbsorbingLayerThickness();
+  return (px / fieldWidth) * getComputationalWidth() - layer;
 }
 
 function toMetersY(py) {
-  return ((fieldHeight - py) / fieldHeight) * SIM_HEIGHT;
+  const layer = getAbsorbingLayerThickness();
+  return ((fieldHeight - py) / fieldHeight)
+    * getComputationalHeight() - layer;
 }
 
 function drawMaterialBoundaries() {

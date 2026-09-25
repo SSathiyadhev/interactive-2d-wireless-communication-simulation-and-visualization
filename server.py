@@ -40,8 +40,8 @@ class SimulationRuntime:
         self.width = 10.0
         self.height = 10.0
         self.dt_multiplier = 0.25
-        self.steps_per_frame = 3
-        self.target_fps = 30
+        self.steps_per_frame = 6
+        self.target_fps = 60
         self.running = False
         self.view_mode = "field"
 
@@ -71,13 +71,12 @@ class SimulationRuntime:
             resolution_y=self.resolution_y,
             dt_stability_multiplier=self.dt_multiplier,
         )
-        self.space.set_global_permittivity(8.8541878128e-12)
-        self.space.set_global_conductivity(0.0)
 
         self.transmitters.clear()
         self.receivers.clear()
         self.observation_points.clear()
         self.link_evaluators_dict.clear()
+        self.materials_list.clear()
 
         self.add_transmitter(0, 2.0, 7.0, fc=1.0e9, rb=500.0e6, amp=2.0)
         self.add_receiver(0, 8.0, 5.0, bit_rate=500.0e6)
@@ -223,9 +222,8 @@ class SimulationRuntime:
         old_mats = list(self.materials_list)
 
         # Reset simulation material maps to vacuum
-        self.space.set_global_permittivity(8.8541878128e-12)
-        self.space.set_global_permeability(4.0e-7 * np.pi)
-        self.space.set_global_conductivity(0.0)
+        # while preserving the absorbing layer.
+        self.space.reset_materials()
 
         # Clear material list before rebuilding it
         self.materials_list.clear()
@@ -252,9 +250,8 @@ class SimulationRuntime:
         # Clear electromagnetic field
 
         # Reset material maps to vacuum
-        self.space.set_global_permittivity(8.8541878128e-12)
-        self.space.set_global_permeability(4.0e-7 * np.pi)
-        self.space.set_global_conductivity(0.0)
+        # while preserving the absorbing layer.
+        self.space.reset_materials()
 
         # Remove material entries from the UI/state
         self.materials_list.clear()
@@ -370,10 +367,21 @@ class SimulationRuntime:
         return {
             "type": "telemetry",
             "running": self.running,
+
             "grid_width": self.resolution_x,
             "grid_height": self.resolution_y,
+
+            "physical_width": self.width,
+            "physical_height": self.height,
+
+            "computational_width": self.space.computational_width,
+            "computational_height": self.space.computational_height,
+
+            "absorbing_layer_thickness": self.space.absorbing_layer_thickness,
+
             "dt_multiplier": self.dt_multiplier,
             "time_ns": self.space.time * 1e9,
+
             "transmitters": tx_list,
             "receivers": rx_list,
             "observation_points": obs_list,
