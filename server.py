@@ -195,7 +195,6 @@ class SimulationRuntime:
             mat.set_conductivity(float(cond))
         mat.apply()
 
-        # Material maps have changed, so rebuild the cached solver coefficients.
         if hasattr(self.wave_solver, "refresh"):
             self.wave_solver.refresh()
 
@@ -212,23 +211,15 @@ class SimulationRuntime:
         })
 
     def remove_material(self, mat_id):
-        # Remove selected material from the list
         self.materials_list = [
             m for m in self.materials_list
             if m.get("id") != mat_id
         ]
-
-        # Save remaining materials
         old_mats = list(self.materials_list)
 
-        # Reset simulation material maps to vacuum
-        # while preserving the absorbing layer.
         self.space.reset_materials()
-
-        # Clear material list before rebuilding it
         self.materials_list.clear()
 
-        # Reapply remaining materials
         for m in old_mats:
             self.add_material(
                 name=m["name"],
@@ -242,21 +233,13 @@ class SimulationRuntime:
                 cond=m["conductivity"]
             )
 
-        # Ensure solver uses the final material maps
         if hasattr(self.wave_solver, "refresh"):
             self.wave_solver.refresh()
 
     def clear_materials(self):
-        # Clear electromagnetic field
-
-        # Reset material maps to vacuum
-        # while preserving the absorbing layer.
         self.space.reset_materials()
-
-        # Remove material entries from the UI/state
         self.materials_list.clear()
 
-        # Rebuild solver coefficients using the reset material maps
         if hasattr(self.wave_solver, "refresh"):
             self.wave_solver.refresh()
 
@@ -293,9 +276,9 @@ class SimulationRuntime:
             fft_spec = amps[freqs <= 3.0e9].tolist() if len(amps) > 0 else []
             tx_list.append({
                 "id": tid, "x": float(tx.x), "y": float(tx.y),
-                "fc": safe_call(tx, "carrier_frequency", default=1.0e9),
-                "rb": safe_call(tx, "bit_rate", default=500.0e6),
-                "amp": safe_call(tx, "carrier_amplitude", default=2.0),
+                "fc": safe_call(tx, "carrier_frequency", "fc", default=1.0e9),
+                "rb": safe_call(tx, "bit_rate", "rb", default=500.0e6),
+                "amp": safe_call(tx, "carrier_amplitude", "amplitude", "amp", default=2.0),
                 "symbols": list(tx.get_bit_values()) if hasattr(tx, "get_bit_values") else [],
                 "shaped": list(tx.get_shaped_values()) if hasattr(tx, "get_shaped_values") else [],
                 "carrier": list(tx.get_carrier_values()) if hasattr(tx, "get_carrier_values") else [],
@@ -320,8 +303,8 @@ class SimulationRuntime:
 
             rx_list.append({
                 "id": rid, "x": float(r.x), "y": float(r.y),
-                "fc": safe_call(r, "tuned_frequency", default=1.0e9),
-                "rb": safe_call(r, "bit_rate", default=500.0e6),
+                "fc": safe_call(r, "tuned_frequency", "fc", default=1.0e9),
+                "rb": safe_call(r, "bit_rate", "rb", default=500.0e6),
                 "rx_raw": list(r.get_received_values()),
                 "rx_bpf": list(r.get_filtered_values()),
                 "rx_mixed": list(r.get_mixed_values()),
@@ -367,21 +350,16 @@ class SimulationRuntime:
         return {
             "type": "telemetry",
             "running": self.running,
-
             "grid_width": self.resolution_x,
             "grid_height": self.resolution_y,
-
             "physical_width": self.width,
             "physical_height": self.height,
-
             "computational_width": self.space.computational_width,
             "computational_height": self.space.computational_height,
-
             "absorbing_layer_thickness": self.space.absorbing_layer_thickness,
-
             "dt_multiplier": self.dt_multiplier,
             "time_ns": self.space.time * 1e9,
-
+            "dt": self.space.dt,
             "transmitters": tx_list,
             "receivers": rx_list,
             "observation_points": obs_list,
@@ -425,11 +403,63 @@ def handle_control_message(message: dict):
             runtime.add_transmitter(new_id, float(message.get("x", 2.0)), float(message.get("y", 7.0)))
         elif msg_type == "remove_transmitter":
             runtime.remove_transmitter(int(message.get("tx_id", 0)))
+        
+        elif msg_type == "set_transmitter_params":
+            tx_id = int(message.get("tx_id", 0))
+
+            if tx_id in runtime.transmitters:
+                tx = runtime.transmitters[tx_id]
+
+                if "fc" in message:
+                    tx.set_carrier_frequency(
+                        float(message["fc"])
+                    )
+
+                if "rb" in message:
+                    tx.set_bit_rate(
+                        float(message["rb"])
+                    )
+
+                amp_val = message.get(
+                    "amp",
+                    message.get(
+                        "amplitude",
+                        message.get("carrier_amplitude")
+                    )
+                )
+
+                if amp_val is not None:
+                    tx.set_carrier_amplitude(
+                        float(amp_val)
+                    )
+
+                print(
+                    f"[BACKEND] Updated Transmitter {tx_id} -> "
+                    f"Freq: {tx.get_carrier_frequency()} Hz, "
+                    f"Amp: {tx.get_carrier_amplitude()} V, "
+                    f"BitRate: {tx.bit_rate} bps"
+                )
+
         elif msg_type == "add_receiver":
             new_id = max(runtime.receivers.keys()) + 1 if runtime.receivers else 0
             runtime.add_receiver(new_id, float(message.get("x", 8.0)), float(message.get("y", 5.0)))
         elif msg_type == "remove_receiver":
             runtime.remove_receiver(int(message.get("rx_id", 0)))
+
+        elif msg_type == "set_receiver_params":
+            rx_id = int(message.get("rx_id", 0))
+            if rx_id in runtime.receivers:
+                rx = runtime.receivers[rx_id]
+                if "fc" in message:
+                    val = float(message["fc"])
+                    if hasattr(rx, "tuned_frequency"): rx.tuned_frequency = val
+                    if hasattr(rx, "fc"): rx.fc = val
+                if "rb" in message:
+                    val = float(message["rb"])
+                    if hasattr(rx, "bit_rate"): rx.bit_rate = val
+                    if hasattr(rx, "rb"): rx.rb = val
+                print(f"[BACKEND] Updated Receiver {rx_id} -> Tuned Freq: {safe_call(rx, 'tuned_frequency', 'fc')} Hz, BitRate: {safe_call(rx, 'bit_rate', 'rb')} bps")
+
         elif msg_type == "add_observation_point":
             runtime.add_observation_point(float(message.get("x", 5.0)), float(message.get("y", 5.0)), label=message.get("label", "Probe"))
         elif msg_type == "remove_observation_point":
