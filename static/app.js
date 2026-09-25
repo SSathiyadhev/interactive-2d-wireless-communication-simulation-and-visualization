@@ -1,4 +1,4 @@
-// static/app.js - Complete FDTD Workbench Frontend with Updated Receiver Stages (Mixer Out & Matched)
+// static/app.js - Complete FDTD Workbench Frontend with Aligned Message Types & Robust Amplitude Payloads
 
 const emCanvas = document.getElementById("emCanvas");
 const emCtx = emCanvas ? emCanvas.getContext("2d") : null;
@@ -578,25 +578,54 @@ function openNodeParameterPopup(type, id, mouseX, mouseY) {
     openScopeModal(type, id);
   };
 
+  // Robust function using the correct backend message type ("set_transmitter_params")
+  function sendNodeParams() {
+    const fcVal = parseFloat(popup.querySelector("#rangeFc").value) * 1e9;
+    const rbVal = parseFloat(popup.querySelector("#rangeRb").value) * 1e6;
+    
+    if (type === "tx") {
+      const ampEl = popup.querySelector("#rangeAmp");
+      const ampVal = ampEl ? parseFloat(ampEl.value) : 2.0;
+      safeSend({
+        type: "set_transmitter_params",
+        tx_id: id,
+        fc: fcVal,
+        rb: rbVal,
+        amp: ampVal,
+        amplitude: ampVal,
+        carrier_amplitude: ampVal
+      });
+    } else {
+      safeSend({
+        type: "set_receiver_params",
+        rx_id: id,
+        fc: fcVal,
+        rb: rbVal
+      });
+    }
+  }
+
   popup.querySelector("#rangeFc").oninput = (e) => {
     popup.querySelector("#valFc").textContent = e.target.value;
-    const newFc = parseFloat(e.target.value) * 1e9;
-    safeSend({ type: type === "tx" ? "set_tx_params" : "set_rx_params", [type === 'tx' ? 'tx_id' : 'rx_id']: id, fc: newFc });
+    sendNodeParams();
   };
   popup.querySelector("#rangeRb").oninput = (e) => {
     popup.querySelector("#valRb").textContent = e.target.value;
-    const newRb = parseFloat(e.target.value) * 1e6;
-    safeSend({ type: type === "tx" ? "set_tx_params" : "set_rx_params", [type === 'tx' ? 'tx_id' : 'rx_id']: id, rb: newRb });
+    sendNodeParams();
   };
   if (type === "tx") {
-    popup.querySelector("#rangeAmp").oninput = (e) => {
-      popup.querySelector("#valAmp").textContent = e.target.value;
-      safeSend({ type: "set_tx_params", tx_id: id, amp: parseFloat(e.target.value) });
-    };
+    const rangeAmp = popup.querySelector("#rangeAmp");
+    if (rangeAmp) {
+      rangeAmp.oninput = (e) => {
+        popup.querySelector("#valAmp").textContent = e.target.value;
+        sendNodeParams();
+      };
+    }
   }
+
   popup.querySelector("#inputWindowSize").onchange = (e) => {
     const winNs = parseFloat(e.target.value) || 20.0;
-    safeSend({ type: type === "tx" ? "set_tx_params" : "set_rx_params", [type === 'tx' ? 'tx_id' : 'rx_id']: id, window_ns: winNs });
+    safeSend({ type: type === "tx" ? "set_transmitter_params" : "set_receiver_params", [type === 'tx' ? 'tx_id' : 'rx_id']: id, window_ns: winNs });
   };
 }
 
@@ -752,71 +781,171 @@ function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum, isTimeD
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
 
-  ctx.strokeStyle = "#162032"; ctx.lineWidth = 1;
-  ctx.fillStyle = "#94a3b8"; ctx.font = "10px monospace";
+  ctx.strokeStyle = "#162032";
+  ctx.lineWidth = 1;
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "10px monospace";
 
-  let maxVal = 1.0, minVal = isSpectrum ? 0.0 : -1.0;
+  let maxVal = 1.0;
+  let minVal = isSpectrum ? 0.0 : -1.0;
+
   if (values && values.length > 0) {
     const peak = Math.max(...values.map(Math.abs), 0.01);
     maxVal = isSpectrum ? peak * 1.1 : peak * 1.25;
     minVal = isSpectrum ? 0.0 : -maxVal;
   }
 
+  // Y-axis grid
   for (let i = 0; i <= 4; i++) {
     const gy = padTop + (plotH / 4) * i;
     const val = maxVal - (i / 4) * (maxVal - minVal);
-    ctx.beginPath(); ctx.moveTo(padLeft, gy); ctx.lineTo(w - padRight, gy); ctx.stroke();
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+
+    ctx.beginPath();
+    ctx.moveTo(padLeft, gy);
+    ctx.lineTo(w - padRight, gy);
+    ctx.stroke();
+
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
     ctx.fillText(val.toFixed(2), padLeft - 8, gy);
   }
 
+  // X-axis grid
   for (let i = 0; i <= 4; i++) {
     const gx = padLeft + (plotW / 4) * i;
-    ctx.beginPath(); ctx.moveTo(gx, padTop); ctx.lineTo(gx, h - padBottom); ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(gx, padTop);
+    ctx.lineTo(gx, h - padBottom);
+    ctx.stroke();
+
     if (values && values.length > 0) {
       let xValStr = "";
+
+      // -----------------------------
+      // TIME DOMAIN
+      // -----------------------------
       if (isTimeDomain) {
-        const timeNs = ((i / 4) * values.length * 0.025).toFixed(1);
-        xValStr = `${timeNs} ns`;
-      } else {
-        xValStr = ((i / 4) * values.length).toFixed(0);
+        const dtSec = latestTelemetry?.dt || 2.832e-11;
+
+        // Total duration represented by the samples
+        const totalTimeNs = values.length * dtSec * 1e9;
+
+        const timeNs = (i / 4) * totalTimeNs;
+
+        xValStr = `${timeNs.toFixed(1)} ns`;
       }
-      ctx.textAlign = "center"; ctx.textBaseline = "top";
+
+      // -----------------------------
+      // FREQUENCY DOMAIN / FFT
+      // -----------------------------
+      else if (isSpectrum) {
+        const dtSec = latestTelemetry?.dt || 2.832e-11;
+
+        // Nyquist frequency = 1 / (2*dt)
+        const nyquistGHz = (1 / (2 * dtSec)) / 1e9;
+
+        const freqGHz = (i / 4) * nyquistGHz;
+
+        xValStr = `${freqGHz.toFixed(1)} GHz`;
+      }
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
       ctx.fillText(xValStr, gx, h - padBottom + 6);
     }
   }
 
+  // Axis labels
   ctx.save();
-  ctx.fillStyle = "#cbd5e1"; ctx.font = "bold 10px sans-serif";
+  ctx.fillStyle = "#cbd5e1";
+  ctx.font = "bold 10px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(xLabel, padLeft + plotW / 2, h - 14);
+
+  ctx.fillText(
+    xLabel,
+    padLeft + plotW / 2,
+    h - 14
+  );
+
   ctx.translate(14, padTop + plotH / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillText(yLabel, 0, 0);
+
   ctx.restore();
 
+  // No data
   if (!values || values.length < 2) {
-    ctx.fillStyle = "#64748b"; ctx.font = "11.5px sans-serif"; ctx.textAlign = "center";
-    ctx.fillText("Waiting for telemetry data...", padLeft + plotW / 2, padTop + plotH / 2);
+    ctx.fillStyle = "#64748b";
+    ctx.font = "11.5px sans-serif";
+    ctx.textAlign = "center";
+
+    ctx.fillText(
+      "Waiting for telemetry data...",
+      padLeft + plotW / 2,
+      padTop + plotH / 2
+    );
+
     return;
   }
 
+  // -----------------------------
+  // FFT SPECTRUM
+  // -----------------------------
   if (isSpectrum) {
     ctx.fillStyle = "#facc15";
+
     const barW = plotW / values.length;
+
     values.forEach((v, i) => {
-      const normH = Math.max(0, Math.min(1, v / (maxVal || 1.0)));
+      const normH = Math.max(
+        0,
+        Math.min(1, v / (maxVal || 1.0))
+      );
+
       const barH = normH * plotH;
-      ctx.fillRect(padLeft + (i * barW), (padTop + plotH) - barH, Math.max(1, barW - 1), barH);
+
+      ctx.fillRect(
+        padLeft + (i * barW),
+        (padTop + plotH) - barH,
+        Math.max(1, barW - 1),
+        barH
+      );
     });
-  } else {
-    ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = 1.8; ctx.beginPath();
+  }
+
+  // -----------------------------
+  // TIME DOMAIN
+  // -----------------------------
+  else {
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+
     values.forEach((v, i) => {
-      const x = padLeft + (i / (values.length - 1)) * plotW;
-      const normY = Math.max(0, Math.min(1, (v - minVal) / (maxVal - minVal)));
-      const y = (padTop + plotH) - (normY * plotH);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      const x =
+        padLeft +
+        (i / (values.length - 1)) * plotW;
+
+      const normY = Math.max(
+        0,
+        Math.min(
+          1,
+          (v - minVal) / (maxVal - minVal)
+        )
+      );
+
+      const y =
+        (padTop + plotH) -
+        (normY * plotH);
+
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
     });
+
     ctx.stroke();
   }
 }
