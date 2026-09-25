@@ -31,6 +31,7 @@ class SimulationSpace:
         resolution_x,
         resolution_y,
         dt_stability_multiplier,
+        absorbing_layer_thickness=3.0
     ):
         """
         Constructor Arguments
@@ -45,12 +46,43 @@ class SimulationSpace:
 
         dt_stability_multiplier : Multiplier used to determine the
                                    simulation time step.
+
+        absorbing_layer_thickness   : Thickness of the absorbing layer in meters.
         """
 
-        # Physical dimensions
+        # Physical dimensions of the user simulation domain
 
-        self.width = width
-        self.height = height
+        self.width = float(width)
+        self.height = float(height)
+
+        # Absorbing boundary thickness
+
+        self.absorbing_layer_thickness = float(
+            absorbing_layer_thickness
+        )
+
+        if self.absorbing_layer_thickness < 0.0:
+            raise ValueError(
+                "Absorbing layer thickness cannot be negative."
+            )
+
+        # Computational domain dimensions
+        #
+        # The user still works with:
+        #     0 <= x <= width
+        #     0 <= y <= height
+        #
+        # The additional region exists only internally.
+
+        self.computational_width = (
+            self.width
+            + 2.0 * self.absorbing_layer_thickness
+        )
+
+        self.computational_height = (
+            self.height
+            + 2.0 * self.absorbing_layer_thickness
+        )
 
         # Grid resolution
 
@@ -59,8 +91,15 @@ class SimulationSpace:
 
         # Physical spacing between neighbouring sample points
 
-        self.dx = width / (resolution_x - 1)
-        self.dy = height / (resolution_y - 1)
+        self.dx = (
+            self.computational_width
+            / (resolution_x - 1)
+        )
+
+        self.dy = (
+            self.computational_height
+            / (resolution_y - 1)
+        )
 
         # Simulation clock
 
@@ -111,6 +150,8 @@ class SimulationSpace:
             dtype=np.float64,
         )
 
+        self._initialize_absorbing_layer()
+
         self._mu = np.full(
             (resolution_x, resolution_y),
             MU_0,
@@ -127,8 +168,23 @@ class SimulationSpace:
         to match the frontend canvas coordinate orientation.
         """
 
-        i = int(round(x / self.dx))
-        j = int(round((self.height - y) / self.dy))
+        i = int(
+            round(
+                (x + self.absorbing_layer_thickness)
+                / self.dx
+            )
+        )
+
+        j = int(
+            round(
+                (
+                    self.height
+                    + self.absorbing_layer_thickness
+                    - y
+                )
+                / self.dy
+            )
+        )
 
         return i, j
 
@@ -137,8 +193,16 @@ class SimulationSpace:
         Converts grid indices to physical coordinates with inverted y-axis.
         """
 
-        x = i * self.dx
-        y = self.height - (j * self.dy)
+        x = (
+            i * self.dx
+            - self.absorbing_layer_thickness
+        )
+
+        y = (
+            self.height
+            + self.absorbing_layer_thickness
+            - j * self.dy
+        )
 
         return x, y
 
@@ -580,11 +644,103 @@ class SimulationSpace:
     # Reset
     # =============================================================
 
+    def reset_materials(self):
+        """
+        Resets material properties to vacuum while
+        preserving the absorbing boundary layer.
+        """
+
+        self._epsilon.fill(EPSILON_0)
+        self._mu.fill(MU_0)
+        self._sigma.fill(0.0)
+
+        self._initialize_absorbing_layer()
+
     def reset(self):
         """
         Resets the complete simulation state.
         """
 
         self.clear()
+        self.reset_materials()
         self.time = 0.0
         self.running = False
+
+    def _initialize_absorbing_layer(self):
+        """
+        Initializes a graded conductivity profile in the
+        absorbing layer surrounding the user simulation domain.
+        """
+
+        layer = self.absorbing_layer_thickness
+
+        if layer <= 0.0:
+            return
+
+        # Internal computational coordinates.
+        #
+        # x: -layer ... width + layer
+        # y: -layer ... height + layer
+
+        x = (
+            np.arange(self.resolution_x) * self.dx
+            - layer
+        )
+
+        y = (
+            self.height
+            + layer
+            - np.arange(self.resolution_y) * self.dy
+        )
+
+        # Create 2-D coordinate grids.
+        #
+        # X[i,j] and Y[i,j] give the physical coordinate
+        # of every individual grid point.
+
+        X, Y = np.meshgrid(
+            x,
+            y,
+            indexing="ij"
+        )
+
+        # Distance from each grid point to the four
+        # boundaries of the user simulation domain.
+
+        distance_to_left = X
+        distance_to_right = self.width - X
+        distance_to_bottom = Y
+        distance_to_top = self.height - Y
+
+        # Distance to the nearest of the four boundaries.
+
+        distance_to_user_domain = np.minimum.reduce(
+            [
+                distance_to_left,
+                distance_to_right,
+                distance_to_bottom,
+                distance_to_top,
+            ]
+        )
+
+        # Normalized depth inside the absorbing layer.
+        #
+        # 0 -> boundary of user domain
+        # 1 -> outer computational boundary
+
+        normalized_depth = np.clip(
+            -distance_to_user_domain / layer,
+            0.0,
+            1.0,
+        )
+
+        # Maximum conductivity of the absorbing layer.
+
+        sigma_max = 0.15
+
+        # Quadratic grading.
+
+        self._sigma[:, :] = (
+            sigma_max
+            * normalized_depth**2
+        )

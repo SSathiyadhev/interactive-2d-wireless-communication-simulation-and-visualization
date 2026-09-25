@@ -40,8 +40,8 @@ class SimulationRuntime:
         self.width = 10.0
         self.height = 10.0
         self.dt_multiplier = 0.25
-        self.steps_per_frame = 3
-        self.target_fps = 30
+        self.steps_per_frame = 6
+        self.target_fps = 60
         self.running = False
         self.view_mode = "field"
 
@@ -71,13 +71,12 @@ class SimulationRuntime:
             resolution_y=self.resolution_y,
             dt_stability_multiplier=self.dt_multiplier,
         )
-        self.space.set_global_permittivity(8.8541878128e-12)
-        self.space.set_global_conductivity(0.0)
 
         self.transmitters.clear()
         self.receivers.clear()
         self.observation_points.clear()
         self.link_evaluators_dict.clear()
+        self.materials_list.clear()
 
         self.add_transmitter(0, 2.0, 7.0, fc=1.0e9, rb=500.0e6, amp=2.0)
         self.add_receiver(0, 8.0, 5.0, bit_rate=500.0e6)
@@ -218,9 +217,7 @@ class SimulationRuntime:
         ]
         old_mats = list(self.materials_list)
 
-        self.space.set_global_permittivity(8.8541878128e-12)
-        self.space.set_global_permeability(4.0e-7 * np.pi)
-        self.space.set_global_conductivity(0.0)
+        self.space.reset_materials()
         self.materials_list.clear()
 
         for m in old_mats:
@@ -240,9 +237,7 @@ class SimulationRuntime:
             self.wave_solver.refresh()
 
     def clear_materials(self):
-        self.space.set_global_permittivity(8.8541878128e-12)
-        self.space.set_global_permeability(4.0e-7 * np.pi)
-        self.space.set_global_conductivity(0.0)
+        self.space.reset_materials()
         self.materials_list.clear()
 
         if hasattr(self.wave_solver, "refresh"):
@@ -357,8 +352,14 @@ class SimulationRuntime:
             "running": self.running,
             "grid_width": self.resolution_x,
             "grid_height": self.resolution_y,
+            "physical_width": self.width,
+            "physical_height": self.height,
+            "computational_width": self.space.computational_width,
+            "computational_height": self.space.computational_height,
+            "absorbing_layer_thickness": self.space.absorbing_layer_thickness,
             "dt_multiplier": self.dt_multiplier,
             "time_ns": self.space.time * 1e9,
+            "dt": self.space.dt,
             "transmitters": tx_list,
             "receivers": rx_list,
             "observation_points": obs_list,
@@ -405,32 +406,39 @@ def handle_control_message(message: dict):
         
         elif msg_type == "set_transmitter_params":
             tx_id = int(message.get("tx_id", 0))
+
             if tx_id in runtime.transmitters:
                 tx = runtime.transmitters[tx_id]
+
                 if "fc" in message:
-                    val = float(message["fc"])
-                    if hasattr(tx, "carrier_frequency"): tx.carrier_frequency = val
-                    if hasattr(tx, "fc"): tx.fc = val
+                    tx.set_carrier_frequency(
+                        float(message["fc"])
+                    )
+
                 if "rb" in message:
-                    val = float(message["rb"])
-                    if hasattr(tx, "bit_rate"): tx.bit_rate = val
-                    if hasattr(tx, "rb"): tx.rb = val
-                
-                amp_val = message.get("amp", message.get("amplitude", message.get("carrier_amplitude")))
+                    tx.set_bit_rate(
+                        float(message["rb"])
+                    )
+
+                amp_val = message.get(
+                    "amp",
+                    message.get(
+                        "amplitude",
+                        message.get("carrier_amplitude")
+                    )
+                )
+
                 if amp_val is not None:
-                    val = float(amp_val)
-                    if hasattr(tx, "carrier_amplitude"): tx.carrier_amplitude = val
-                    if hasattr(tx, "amplitude"): tx.amplitude = val
-                    if hasattr(tx, "amp"): tx.amp = val
+                    tx.set_carrier_amplitude(
+                        float(amp_val)
+                    )
 
-                if hasattr(tx, "update_parameters") and callable(tx.update_parameters):
-                    tx.update_parameters()
-                elif hasattr(tx, "_generate_waveform") and callable(tx._generate_waveform):
-                    tx._generate_waveform()
-
-                current_fc = safe_call(tx, "carrier_frequency", "fc", default=1.0e9)
-                current_amp = safe_call(tx, "carrier_amplitude", "amplitude", "amp", default=2.0)
-                print(f"[BACKEND] Updated Transmitter {tx_id} -> Freq: {current_fc} Hz, Amp: {current_amp} V")
+                print(
+                    f"[BACKEND] Updated Transmitter {tx_id} -> "
+                    f"Freq: {tx.get_carrier_frequency()} Hz, "
+                    f"Amp: {tx.get_carrier_amplitude()} V, "
+                    f"BitRate: {tx.bit_rate} bps"
+                )
 
         elif msg_type == "add_receiver":
             new_id = max(runtime.receivers.keys()) + 1 if runtime.receivers else 0
