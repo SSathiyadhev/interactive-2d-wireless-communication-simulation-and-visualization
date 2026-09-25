@@ -197,6 +197,10 @@ class SimulationRuntime:
             mat.set_conductivity(float(cond))
         mat.apply()
 
+        # Material maps have changed, so rebuild the cached solver coefficients.
+        if hasattr(self.wave_solver, "refresh"):
+            self.wave_solver.refresh()
+
         mat_id = len(self.materials_list)
         self.materials_list.append({
             "id": mat_id,
@@ -210,21 +214,55 @@ class SimulationRuntime:
         })
 
     def remove_material(self, mat_id):
-        self.materials_list = [m for m in self.materials_list if m.get("id") != mat_id]
-        self.space.clear()
+        # Remove selected material from the list
+        self.materials_list = [
+            m for m in self.materials_list
+            if m.get("id") != mat_id
+        ]
+
+        # Save remaining materials
         old_mats = list(self.materials_list)
+
+        # Reset simulation material maps to vacuum
+        self.space.set_global_permittivity(8.8541878128e-12)
+        self.space.set_global_permeability(4.0e-7 * np.pi)
+        self.space.set_global_conductivity(0.0)
+
+        # Clear material list before rebuilding it
         self.materials_list.clear()
+
+        # Reapply remaining materials
         for m in old_mats:
             self.add_material(
-                name=m["name"], x_min=m["x_min"], x_max=m["x_max"],
-                y_min=m["y_min"], y_max=m["y_max"], angle=m["angle"],
-                rel_perm=m["relative_permittivity"], rel_mu=m["relative_permeability"],
+                name=m["name"],
+                x_min=m["x_min"],
+                x_max=m["x_max"],
+                y_min=m["y_min"],
+                y_max=m["y_max"],
+                angle=m["angle"],
+                rel_perm=m["relative_permittivity"],
+                rel_mu=m["relative_permeability"],
                 cond=m["conductivity"]
             )
 
+        # Ensure solver uses the final material maps
+        if hasattr(self.wave_solver, "refresh"):
+            self.wave_solver.refresh()
+
     def clear_materials(self):
-        self.space.clear()
+        # Clear electromagnetic field
+
+        # Reset material maps to vacuum
+        self.space.set_global_permittivity(8.8541878128e-12)
+        self.space.set_global_permeability(4.0e-7 * np.pi)
+        self.space.set_global_conductivity(0.0)
+
+        # Remove material entries from the UI/state
         self.materials_list.clear()
+
+        # Rebuild solver coefficients using the reset material maps
+        if hasattr(self.wave_solver, "refresh"):
+            self.wave_solver.refresh()
 
     def step(self):
         for tx in self.transmitters.values():
