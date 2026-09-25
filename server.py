@@ -78,9 +78,9 @@ class SimulationRuntime:
         self.link_evaluators_dict.clear()
         self.materials_list.clear()
 
-        self.add_transmitter(0, 2.0, 7.0, fc=1.0e9, rb=500.0e6, amp=2.0)
-        self.add_receiver(0, 8.0, 5.0, bit_rate=500.0e6)
-        self.add_observation_point(5.0, 5.0, label="Grid Probe 0")
+        self.add_transmitter(0, 2.0, 5.0, fc=1.0e9, rb=200.0e6, amp=2.0)
+        self.add_receiver(0, 8.0, 5.0, bit_rate=200.0e6)
+        self.add_observation_point(3.0, 5.0, label="Grid Probe 0")
 
         self.wave_solver = WaveSolver(self.space, noise_level=0.0)
         self.space.set_running(True)

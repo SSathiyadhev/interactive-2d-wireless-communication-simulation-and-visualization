@@ -119,19 +119,24 @@ class Receiver:
 
     def _update_internal_filter_delays(self):
         """
-        Calculates the total receiver symbol-sampling delay.
+        Calculates the total delay from transmitted symbol impulse
+        to the corresponding matched-filter symbol peak.
 
         Includes:
             - propagation delay
-            - TX + RX RRC delay
-            - receiver BPF group delay at the tuned carrier frequency
+            - TX RRC group delay
+            - RX RRC group delay
+            - receiver BPF group delay
         """
 
         # ---------------------------------------------------------
         # TX RRC + RX RRC
         # ---------------------------------------------------------
         # Each RRC has span/2 symbol periods of group delay.
-        # Two RRC filters therefore give span symbol periods.
+        # Therefore:
+        #
+        #     TX RRC + RX RRC = span symbol periods
+        #
         rrc_pipeline_delay = (
             float(self.rrc_span)
             / self.bit_rate
@@ -140,8 +145,6 @@ class Receiver:
         # ---------------------------------------------------------
         # Receiver RF BPF
         # ---------------------------------------------------------
-        # The receiver is tuned to this carrier frequency, so use
-        # the BPF group delay at the carrier.
         bpf_delay_samples = (
             self.bandpass_filter.get_group_delay_samples(
                 self.tuned_frequency
@@ -154,7 +157,7 @@ class Receiver:
         )
 
         # ---------------------------------------------------------
-        # Total delay
+        # Total delay to the matched-filter symbol peak
         # ---------------------------------------------------------
         self._total_delay_seconds = (
             self._propagation_delay_seconds
@@ -193,18 +196,30 @@ class Receiver:
         return baseband_value
 
     def _is_symbol_sampling_instant(self, current_time):
-        step_index = int(round(current_time / self.simulation_space.dt))
+        step_index = int(
+            round(
+                current_time / self.simulation_space.dt
+            )
+        )
+
         if step_index < self._total_delay_samples:
             return False
-        offset = step_index - self._total_delay_samples
-        return (offset % self._samples_per_symbol) == 0
+
+        offset = (
+            step_index
+            - self._total_delay_samples
+        )
+
+        return (
+            offset % self._samples_per_symbol
+        ) == 0
 
     def _decide_bit(self, baseband_value):
         """
         Thresholds matched filter output.
         Flipped to account for 180-degree carrier phase / coordinate sign inversion.
         """
-        decoded_bit = 1 if baseband_value >= 0.0 else 0
+        decoded_bit = 0 if baseband_value >= 0.0 else 1
         self.current_bit = decoded_bit
         self.demodulated_bits.append(decoded_bit)
 

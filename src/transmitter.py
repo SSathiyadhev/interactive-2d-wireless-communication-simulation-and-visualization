@@ -137,8 +137,10 @@ class Transmitter:
         if self.bit_rate <= 0:
             raise ValueError("Bit rate must be greater than zero.")
 
-        bit_period = 1.0 / self.bit_rate
-        current_bit_index = int(current_time // bit_period)
+        current_sample = int(
+            round(current_time / self.simulation_space.dt)
+        )
+        current_bit_index = current_sample // self._samples_per_symbol
 
         if current_bit_index != self.last_bit_index or self.current_bit is None:
             self.last_bit_index = current_bit_index
@@ -154,8 +156,10 @@ class Transmitter:
         return self.current_bit
 
     def _get_symbol_impulse(self, current_time):
-        bit_period = 1.0 / self.bit_rate
-        current_symbol_index = int(current_time // bit_period)
+        current_sample = int(
+            round(current_time / self.simulation_space.dt)
+        )
+        current_symbol_index = current_sample // self._samples_per_symbol
 
         if current_symbol_index != self._last_symbol_index:
             self._last_symbol_index = current_symbol_index
