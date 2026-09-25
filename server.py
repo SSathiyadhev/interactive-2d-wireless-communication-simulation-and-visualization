@@ -1,5 +1,5 @@
 """
-server.py - Full-Stack FDTD Backend with Automated Material Placement, Custom Material Support & Node Telemetry
+server.py - Full-Stack FDTD Backend with Carrier Wave & Receiver Bits Telemetry Support
 """
 
 import asyncio
@@ -79,7 +79,6 @@ class SimulationRuntime:
         self.observation_points.clear()
         self.link_evaluators_dict.clear()
 
-        # Default initial setup
         self.add_transmitter(0, 2.0, 7.0, fc=1.0e9, rb=500.0e6, amp=2.0)
         self.add_receiver(0, 8.0, 5.0, bit_rate=500.0e6)
         self.add_observation_point(5.0, 5.0, label="Grid Probe 0")
@@ -302,6 +301,7 @@ class SimulationRuntime:
                 "amp": safe_call(tx, "carrier_amplitude", default=2.0),
                 "symbols": list(tx.get_bit_values()) if hasattr(tx, "get_bit_values") else [],
                 "shaped": list(tx.get_shaped_values()) if hasattr(tx, "get_shaped_values") else [],
+                "carrier": list(tx.get_carrier_values()) if hasattr(tx, "get_carrier_values") else [],
                 "bpsk": list(tx.get_bpsk_values()) if hasattr(tx, "get_bpsk_values") else [],
                 "spectrum": fft_spec,
             })
@@ -329,6 +329,7 @@ class SimulationRuntime:
                 "rx_bpf": list(r.get_filtered_values()),
                 "rx_mixed": list(r.get_mixed_values()),
                 "rx_matched": list(r.get_baseband_values()),
+                "rx_bits": list(r.get_bit_values()) if hasattr(r, "get_bit_values") else [],
                 "spectrum": rx_fft_spec
             })
 
@@ -504,7 +505,7 @@ async def ws_sim(websocket: WebSocket):
                 await websocket.send_bytes(runtime.field_bytes())
                 await websocket.send_json(runtime.status())
             except Exception:
-                break  # Exit cleanly if a frame fails to send
+                break
 
             elapsed = time.perf_counter() - loop_start
             await asyncio.sleep(max(0.001, frame_interval - elapsed))

@@ -1,9 +1,8 @@
-// static/app.js - Complete FDTD Workbench Frontend with Safe Binary Canvas Rendering
+// static/app.js - Complete FDTD Workbench Frontend with Updated Receiver Stages (Mixer Out & Matched)
 
 const emCanvas = document.getElementById("emCanvas");
 const emCtx = emCanvas ? emCanvas.getContext("2d") : null;
 
-// Initial telemetry fallback so nodes display instantly on load
 let latestTelemetry = {
   transmitters: [{ id: 0, x: 2.0, y: 7.0, fc: 1e9, rb: 500e6, amp: 2.0 }],
   receivers: [{ id: 0, x: 8.0, y: 5.0, fc: 1e9, rb: 500e6 }],
@@ -20,12 +19,10 @@ let startMousePos = { x: 0, y: 0 };
 let draggedNode = null;
 let activeModalZIndex = 1000;
 
-// Box Drawing State
 let isDrawingBox = false;
 let boxStartCoord = { x: 0, y: 0 };
 let boxCurrentCoord = { x: 0, y: 0 };
 
-// Custom Material Configuration State
 let customMaterialConfig = {
   name: "composite",
   permittivity: 10.0,
@@ -79,8 +76,6 @@ ws.onmessage = (event) => {
   } else {
     if (!emCtx || !imgData) return;
     const bytes = new Uint8Array(event.data);
-    
-    // Safety check: ensure byte length matches image buffer size
     if (bytes.length !== imgData.data.length / 4) return;
 
     let p = 0;
@@ -212,9 +207,6 @@ function drawNodeMarkers() {
   emCtx.restore();
 }
 
-// -----------------------------------------------------------------
-// LINK EVALUATORS & INDIVIDUAL TELEMETRY CARDS
-// -----------------------------------------------------------------
 function renderLinkEvaluators(data) {
   const container = document.getElementById("linkEvaluatorsContainer");
   const block = document.getElementById("linkEvaluatorsBlock");
@@ -222,7 +214,6 @@ function renderLinkEvaluators(data) {
   if (!container || !block) return;
 
   if (telemetryBlock) telemetryBlock.style.display = "none";
-
   if (document.activeElement && (document.activeElement.classList.contains("link-tx") || document.activeElement.classList.contains("link-rx"))) {
     return;
   }
@@ -277,9 +268,6 @@ function updateLinkPair(lid, txId, rxId) {
   safeSend({ type: "update_link_evaluator", lid: parseInt(lid), tx_id: parseInt(txId), rx_id: parseInt(rxId) });
 }
 
-// -----------------------------------------------------------------
-// CANVAS CLICK & DRAG BOX DRAWING & INSPECTION INTERACTION
-// -----------------------------------------------------------------
 if (emCanvas) {
   emCanvas.addEventListener("click", (e) => {
     if (!latestTelemetry) return;
@@ -287,7 +275,6 @@ if (emCanvas) {
     const cx = toMetersX(((e.clientX - rect.left) / rect.width) * fieldWidth);
     const cy = toMetersY(((e.clientY - rect.top) / rect.height) * fieldHeight);
 
-    // 1. Check if clicking an existing placed material block
     if (latestTelemetry.materials) {
       for (let i = 0; i < latestTelemetry.materials.length; i++) {
         const m = latestTelemetry.materials[i];
@@ -298,7 +285,6 @@ if (emCanvas) {
       }
     }
 
-    // 2. Check transmitters
     if (latestTelemetry.transmitters) {
       for (const tx of latestTelemetry.transmitters) {
         if (Math.hypot(cx - tx.x, cy - tx.y) < 0.7) {
@@ -307,7 +293,6 @@ if (emCanvas) {
         }
       }
     }
-    // 3. Check receivers
     if (latestTelemetry.receivers) {
       for (const rx of latestTelemetry.receivers) {
         if (Math.hypot(cx - rx.x, cy - rx.y) < 0.7) {
@@ -316,7 +301,6 @@ if (emCanvas) {
         }
       }
     }
-    // 4. Check observation points
     if (latestTelemetry.observation_points) {
       for (const op of latestTelemetry.observation_points) {
         if (Math.hypot(cx - op.x, cy - op.y) < 0.7) {
@@ -363,7 +347,6 @@ if (emCanvas) {
       }
     }
 
-    // Otherwise, start dragging to draw a permanent material box!
     isDrawingBox = true;
     boxStartCoord = { x: cx, y: cy };
     boxCurrentCoord = { x: cx, y: cy };
@@ -441,7 +424,6 @@ if (emCanvas) {
   });
 }
 
-// Material Property Inspector Function
 function inspectMaterial(idx) {
   if (!latestTelemetry || !latestTelemetry.materials || !latestTelemetry.materials[idx]) return;
   const m = latestTelemetry.materials[idx];
@@ -473,9 +455,6 @@ function inspectMaterial(idx) {
   makeModalDraggable(modal);
 }
 
-// -----------------------------------------------------------------
-// NEAT CUSTOM MATERIAL MODAL POPUP
-// -----------------------------------------------------------------
 function openCustomMaterialModal() {
   let existing = document.getElementById("customMatModal");
   if (existing) existing.remove();
@@ -531,9 +510,6 @@ if (btnOpenMatModal) {
   };
 }
 
-// -----------------------------------------------------------------
-// NODE PARAMETER POPUP & SCOPES
-// -----------------------------------------------------------------
 function openNodeParameterPopup(type, id, mouseX, mouseY) {
   let existing = document.getElementById("nodeParamPopup");
   if (existing) existing.remove();
@@ -624,9 +600,6 @@ function openNodeParameterPopup(type, id, mouseX, mouseY) {
   };
 }
 
-// -----------------------------------------------------------------
-// INDEPENDENT MULTI-SCOPE WINDOW ARCHITECTURE
-// -----------------------------------------------------------------
 const openScopes = new Map();
 
 function openScopeModal(type, id) {
@@ -647,6 +620,7 @@ function openScopeModal(type, id) {
     stages = [
       { key: "symbols", label: "Bits" },
       { key: "shaped", label: "Baseband" },
+      { key: "carrier", label: "Carrier Wave" },
       { key: "bpsk", label: "BPSK RF" },
       { key: "spectrum", label: "FFT Spectrum" }
     ];
@@ -655,8 +629,9 @@ function openScopeModal(type, id) {
     stages = [
       { key: "rx_raw", label: "Antenna" },
       { key: "rx_bpf", label: "BP Filter" },
+      { key: "rx_mixed", label: "Mixer Out" },
       { key: "rx_matched", label: "Matched" },
-      { key: "eye_diagram", label: "Eye Diagram" },
+      { key: "rx_bits", label: "Bits" },
       { key: "spectrum", label: "FFT Spectrum" }
     ];
   } else {
@@ -755,24 +730,24 @@ function renderModalCanvas(scopeData) {
   if (scopeData.type === "tx") {
     const tx = latestTelemetry.transmitters?.find(t => t.id === scopeData.id);
     if (!tx) return;
-    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, tx.spectrum, w, h, "Frequency (GHz)", "Amplitude", true); return; }
+    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, tx.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false); return; }
     values = tx[scopeData.activeStage] || tx.bpsk || [];
   } else if (scopeData.type === "rx") {
     const rx = latestTelemetry.receivers?.find(r => r.id === scopeData.id);
     if (!rx) return;
-    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, rx.spectrum || latestTelemetry.spectrum, w, h, "Frequency (GHz)", "Amplitude", true); return; }
-    if (scopeData.activeStage === "eye_diagram") { drawEyeDiagramWithAxes(ctx, rx.rx_matched || latestTelemetry.rx_matched || [], w, h); return; }
+    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, rx.spectrum || latestTelemetry.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false); return; }
     values = rx[scopeData.activeStage] || rx.rx_raw || [];
   } else if (scopeData.type === "obs") {
     const op = latestTelemetry.observation_points?.find(o => o.id === scopeData.id);
     if (!op) return;
-    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, op.spectrum, w, h, "Frequency (GHz)", "Amplitude", true); return; }
+    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, op.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false); return; }
     values = op.waveform || op.buffered_values || op.samples || [];
   }
-  drawAdvancedPlot(ctx, values, w, h, "Sample Index", "Amplitude (V)", false);
+  
+  drawAdvancedPlot(ctx, values, w, h, "Time (ns)", "Amplitude (V)", false, true);
 }
 
-function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum) {
+function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum, isTimeDomain) {
   const padLeft = 55, padBottom = 45, padTop = 15, padRight = 20;
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
@@ -799,9 +774,15 @@ function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum) {
     const gx = padLeft + (plotW / 4) * i;
     ctx.beginPath(); ctx.moveTo(gx, padTop); ctx.lineTo(gx, h - padBottom); ctx.stroke();
     if (values && values.length > 0) {
-      const xVal = ((i / 4) * values.length).toFixed(0);
+      let xValStr = "";
+      if (isTimeDomain) {
+        const timeNs = ((i / 4) * values.length * 0.025).toFixed(1);
+        xValStr = `${timeNs} ns`;
+      } else {
+        xValStr = ((i / 4) * values.length).toFixed(0);
+      }
       ctx.textAlign = "center"; ctx.textBaseline = "top";
-      ctx.fillText(xVal, gx, h - padBottom + 6);
+      ctx.fillText(xValStr, gx, h - padBottom + 6);
     }
   }
 
@@ -840,57 +821,6 @@ function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum) {
   }
 }
 
-function drawEyeDiagramWithAxes(ctx, values, w, h) {
-  const padLeft = 55, padBottom = 45, padTop = 15, padRight = 20;
-  const plotW = w - padLeft - padRight;
-  const plotH = h - padTop - padBottom;
-
-  ctx.strokeStyle = "#162032"; ctx.lineWidth = 1;
-  ctx.fillStyle = "#94a3b8"; ctx.font = "10px monospace";
-
-  for (let i = 0; i <= 4; i++) {
-    const gy = padTop + (plotH / 4) * i;
-    const val = 1.8 - (i / 4) * 3.6;
-    ctx.beginPath(); ctx.moveTo(padLeft, gy); ctx.lineTo(w - padRight, gy); ctx.stroke();
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    ctx.fillText(val.toFixed(1), padLeft - 8, gy);
-  }
-
-  for (let i = 0; i <= 4; i++) {
-    const gx = padLeft + (plotW / 4) * i;
-    ctx.beginPath(); ctx.moveTo(gx, padTop); ctx.lineTo(gx, h - padBottom); ctx.stroke();
-  }
-
-  ctx.save();
-  ctx.fillStyle = "#cbd5e1"; ctx.font = "bold 10px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("Time (2x Symbol Period)", padLeft + plotW / 2, h - 14);
-  ctx.translate(14, padTop + plotH / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillText("Amplitude (V)", 0, 0);
-  ctx.restore();
-
-  if (!values || values.length < 32) {
-    ctx.fillStyle = "#64748b"; ctx.font = "11.5px sans-serif"; ctx.textAlign = "center";
-    ctx.fillText("Accumulating eye diagram samples...", padLeft + plotW / 2, padTop + plotH / 2);
-    return;
-  }
-
-  const symLen = 16;
-  ctx.strokeStyle = "rgba(232, 121, 249, 0.5)";
-  ctx.lineWidth = 1.5;
-  for (let s = 0; s < values.length - symLen * 2; s += symLen) {
-    ctx.beginPath();
-    for (let i = 0; i < symLen * 2; i++) {
-      const x = padLeft + (i / (symLen * 2 - 1)) * plotW;
-      const normY = Math.max(0, Math.min(1, (values[s + i] + 1.8) / 3.6));
-      const y = (padTop + plotH) - (normY * plotH);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-}
-
 function makeModalDraggable(modal) {
   const header = modal.querySelector(".modal-header");
   let isDrag = false, startX = 0, startY = 0;
@@ -912,9 +842,6 @@ function refreshOpenModals() {
   });
 }
 
-// -----------------------------------------------------------------
-// UI ENGINE & TOOLBAR CONTROLS
-// -----------------------------------------------------------------
 const btnStart = document.getElementById("btnStart");
 if (btnStart) btnStart.onclick = () => safeSend({ type: "start" });
 
