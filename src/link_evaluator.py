@@ -2,75 +2,467 @@
 src/link_evaluator.py
 
 Independent link analyzer that compares transmitted symbols with
-demodulated receiver symbols, accounting for physical propagation
-and DSP group delays to compute BER.
+demodulated receiver symbols and calculates BER.
+
+Synchronization is performed using a known bit sequence transmitted
+at the beginning of the transmission.
+
+The synchronization detector:
+    - Uses a rolling window containing the last N received bits.
+    - Calculates correlation with the known synchronization sequence.
+    - Tracks the strongest correlation peak.
+    - Uses upper/lower thresholds based on the synchronization
+      sequence length.
+    - Supports BPSK polarity inversion.
+    - Locks to the stored maximum-correlation position once the
+      correlation peak has passed.
+
+Also provides physical distance and propagation delay between
+the transmitter and receiver.
 """
 
 import math
 
 
 class LinkEvaluator:
-    def __init__(self, transmitter, receiver, speed_of_light=3.0e8, filter_group_delay_samples=8, warmup_bits=2):
+
+    def __init__(
+        self,
+        transmitter,
+        receiver,
+        speed_of_light=3.0e8,
+        upper_fraction=0.75,
+        lower_fraction=0.625,
+    ):
         self.tx = transmitter
         self.rx = receiver
         self.c = speed_of_light
-        self.filter_group_delay_samples = filter_group_delay_samples
-        self.warmup_bits = warmup_bits
+
+        # ---------------------------------------------------------
+        # BER state
+        # ---------------------------------------------------------
 
         self.total_bits_compared = 0
         self.bit_errors = 0
-        self.last_evaluated_idx = -1
 
-    def calculate_propagation_delay_seconds(self):
-        """Calculates distance-based propagation delay tau = d / c."""
+        # ---------------------------------------------------------
+        # Synchronization state
+        # ---------------------------------------------------------
+
+        self.sync_found = False
+        self.sync_index = None
+        self.inverted = False
+
+        # Peak detection state
+        self.peak_active = False
+
+        self.max_correlation = 0
+        self.max_correlation_index = None
+        self.max_correlation_inverted = False
+
+        # Track how many RX bits have been processed by the
+        # synchronization detector.
+        self.last_rx_bit_count = 0
+
+        # Track how many RX bits have already been printed.
+        self.last_printed_rx_bit_count = 0
+
+        # ---------------------------------------------------------
+        # Synchronization threshold fractions
+        # ---------------------------------------------------------
+
+        self.upper_fraction = upper_fraction
+        self.lower_fraction = lower_fraction
+
+    # =============================================================
+    # Physical link information
+    # =============================================================
+
+    def calculate_distance(self):
+        """Calculates the physical distance between transmitter
+        and receiver.
+        """
+
         dx = self.rx.x - self.tx.x
         dy = self.rx.y - self.tx.y
-        dist = math.hypot(dx, dy)
-        return dist / self.c
+
+        return math.hypot(dx, dy)
+
+    def calculate_propagation_delay_seconds(self):
+        """Calculates propagation delay tau = d / c."""
+
+        distance = self.calculate_distance()
+
+        return distance / self.c
 
     def get_estimated_total_delay_seconds(self):
-        """Total link latency = physical channel delay + filter pipeline delay."""
-        t_prop = self.calculate_propagation_delay_seconds()
-        t_filter = self.filter_group_delay_samples * (1.0 / self.tx.bit_rate)
-        return t_prop + t_filter
+        """Returns the physical propagation delay."""
 
-    def sync_receiver_delay(self):
-        """Passes computed propagation delay to receiver for phase alignment."""
-        t_prop = self.calculate_propagation_delay_seconds()
-        if hasattr(self.rx, "set_estimated_propagation_delay"):
-            self.rx.set_estimated_propagation_delay(t_prop)
+        return self.calculate_propagation_delay_seconds()
+
+    # =============================================================
+    # Correlation
+    # =============================================================
+
+    def _calculate_correlation(self, rx_window, sync_bits):
+        """
+        Calculates BPSK correlation between an RX window and the
+        known synchronization sequence.
+
+        Bit mapping:
+
+            1 -> +1
+            0 -> -1
+
+        A positive correlation indicates normal polarity.
+
+        A negative correlation indicates inverted BPSK polarity.
+        """
+
+        correlation = 0
+
+        for rx_bit, sync_bit in zip(
+            rx_window,
+            sync_bits,
+        ):
+            rx_value = 1 if rx_bit == 1 else -1
+            sync_value = 1 if sync_bit == 1 else -1
+
+            correlation += rx_value * sync_value
+
+        return correlation
+
+    # =============================================================
+    # Synchronization
+    # =============================================================
+
+    def _update_synchronization(
+        self,
+        rx_bits,
+        sync_bits,
+    ):
+        """
+        Updates the rolling synchronization detector.
+
+        Only the latest N RX bits are examined, where N is the
+        synchronization sequence length.
+
+        The detector:
+
+            1. Waits until N bits are available.
+            2. Calculates correlation.
+            3. Starts peak tracking when the upper threshold
+               is crossed.
+            4. Stores the maximum correlation and its index.
+            5. Continues tracking while the peak is active.
+            6. When correlation falls below the lower threshold,
+               the peak is considered complete.
+            7. The stored maximum-correlation position becomes
+               the synchronization position.
+
+        Both normal and inverted BPSK polarity are supported.
+        """
+
+        sync_length = len(sync_bits)
+
+        if sync_length == 0:
+            return
+
+        # ---------------------------------------------------------
+        # Only process when a NEW RX bit has been decoded.
+        # ---------------------------------------------------------
+
+        if len(rx_bits) <= self.last_rx_bit_count:
+            return
+
+        self.last_rx_bit_count = len(rx_bits)
+
+        if len(rx_bits) < sync_length:
+            return
+
+        # ---------------------------------------------------------
+        # Latest N received bits
+        # ---------------------------------------------------------
+
+        window_start = (
+            len(rx_bits) - sync_length
+        )
+
+        rx_window = rx_bits[
+            window_start:
+        ]
+
+        # ---------------------------------------------------------
+        # Calculate correlation
+        # ---------------------------------------------------------
+
+        correlation = self._calculate_correlation(
+            rx_window,
+            sync_bits,
+        )
+
+        absolute_correlation = abs(
+            correlation
+        )
+
+        # ---------------------------------------------------------
+        # Thresholds scale with sync sequence length
+        # ---------------------------------------------------------
+
+        upper_threshold = (
+            self.upper_fraction
+            * sync_length
+        )
+
+        lower_threshold = (
+            self.lower_fraction
+            * sync_length
+        )
+
+        # ---------------------------------------------------------
+        # Start peak tracking
+        # ---------------------------------------------------------
+
+        if not self.peak_active:
+
+            if absolute_correlation >= upper_threshold:
+
+                self.peak_active = True
+
+                self.max_correlation = (
+                    absolute_correlation
+                )
+
+                self.max_correlation_index = (
+                    window_start
+                )
+
+                self.max_correlation_inverted = (
+                    correlation < 0
+                )
+
+            return
+
+        # ---------------------------------------------------------
+        # Peak is active
+        # ---------------------------------------------------------
+
+        if absolute_correlation > self.max_correlation:
+
+            self.max_correlation = (
+                absolute_correlation
+            )
+
+            self.max_correlation_index = (
+                window_start
+            )
+
+            self.max_correlation_inverted = (
+                correlation < 0
+            )
+
+            return
+
+        # ---------------------------------------------------------
+        # Peak has passed
+        # ---------------------------------------------------------
+
+        if absolute_correlation < lower_threshold:
+
+            if (
+                self.max_correlation_index
+                is not None
+            ):
+
+                self.sync_found = True
+
+                self.sync_index = (
+                    self.max_correlation_index
+                )
+
+                self.inverted = (
+                    self.max_correlation_inverted
+                )
+
+            self.peak_active = False
+
+    # =============================================================
+    # Raw TX/RX bit display
+    # =============================================================
+
+    def _print_raw_bit_sequences(
+        self,
+        tx_bits,
+        rx_bits,
+    ):
+        """
+        Prints the raw TX and RX bit sequences with their own
+        indices aligned from index 0.
+
+        TX[0] is shown beside RX[0],
+        TX[1] beside RX[1], and so on.
+
+        No synchronization offset or polarity correction is applied.
+        """
+
+        if (
+            len(rx_bits)
+            <= self.last_printed_rx_bit_count
+        ):
+            return
+
+        print("\nINDEX   TX   RX")
+
+        max_length = max(
+            len(tx_bits),
+            len(rx_bits),
+        )
+
+        for i in range(max_length):
+
+            tx_bit = (
+                tx_bits[i]
+                if i < len(tx_bits)
+                else "-"
+            )
+
+            rx_bit = (
+                rx_bits[i]
+                if i < len(rx_bits)
+                else "-"
+            )
+
+            print(
+                f"{i:5d}   {tx_bit}    {rx_bit}"
+            )
+
+        print()
+
+        self.last_printed_rx_bit_count = (
+            len(rx_bits)
+        )
+
+    # =============================================================
+    # Main evaluator
+    # =============================================================
 
     def evaluate(self):
         """
-        Extracts demodulated bits from the receiver, aligns them with the
-        transmitted bits, and updates BER metrics while ignoring startup transients.
+        Synchronizes using the known sequence and then compares
+        newly received payload bits sequentially.
         """
-        rx_bits = getattr(self.rx, "demodulated_bits", [])
-        tx_bits = getattr(self.tx, "generated_bits", [])
 
-        if not rx_bits or not tx_bits:
+        rx_bits = getattr(
+            self.rx,
+            "demodulated_bits",
+            [],
+        )
+
+        tx_bits = getattr(
+            self.tx,
+            "generated_bits",
+            [],
+        )
+
+        sync_bits = getattr(
+            self.tx,
+            "custom_bit_sequence",
+            None,
+        )
+
+        if not rx_bits or not tx_bits or not sync_bits:
             return
 
-        while self.last_evaluated_idx + 1 < len(rx_bits):
-            rx_idx = self.last_evaluated_idx + 1
-            tx_idx = rx_idx
+        # =========================================================
+        # Raw TX/RX bit display
+        # =========================================================
 
-            # Ignore startup filter transient bits
-            if tx_idx < self.warmup_bits:
-                self.last_evaluated_idx = rx_idx
-                continue
+        self._print_raw_bit_sequences(
+            tx_bits,
+            rx_bits,
+        )
 
-            if tx_idx >= len(tx_bits):
-                break
+        # =========================================================
+        # Synchronization
+        # =========================================================
 
-            actual_tx = tx_bits[tx_idx]
-            detected_rx = rx_bits[rx_idx]
+        if not self.sync_found:
 
-            if actual_tx != detected_rx:
+            self._update_synchronization(
+                rx_bits,
+                sync_bits,
+            )
+
+            if not self.sync_found:
+                return
+
+        # =========================================================
+        # Payload alignment
+        # =========================================================
+
+        sync_length = len(sync_bits)
+
+        rx_payload_start = (
+            self.sync_index
+            + sync_length
+        )
+
+        tx_payload_start = sync_length
+
+        # ---------------------------------------------------------
+        # Available payload
+        # ---------------------------------------------------------
+
+        rx_payload = rx_bits[
+            rx_payload_start:
+        ]
+
+        tx_payload = tx_bits[
+            tx_payload_start:
+        ]
+
+        # ---------------------------------------------------------
+        # Correct BPSK polarity if necessary
+        # ---------------------------------------------------------
+
+        if self.inverted:
+
+            rx_payload = [
+                1 - bit
+                for bit in rx_payload
+            ]
+
+        # =========================================================
+        # Compare only newly available bits
+        # =========================================================
+
+        available_bits = min(
+            len(rx_payload),
+            len(tx_payload),
+        )
+
+        if (
+            available_bits
+            <= self.total_bits_compared
+        ):
+            return
+
+        for i in range(
+            self.total_bits_compared,
+            available_bits,
+        ):
+
+            if (
+                rx_payload[i]
+                != tx_payload[i]
+            ):
                 self.bit_errors += 1
 
             self.total_bits_compared += 1
-            self.last_evaluated_idx = rx_idx
+
+    # =============================================================
+    # BER results
+    # =============================================================
 
     def get_bit_errors(self):
         return self.bit_errors
@@ -79,12 +471,35 @@ class LinkEvaluator:
         return self.total_bits_compared
 
     def get_bit_error_rate(self):
+
         if self.total_bits_compared == 0:
             return 0.0
-        return self.bit_errors / self.total_bits_compared
+
+        return (
+            self.bit_errors
+            / self.total_bits_compared
+        )
+
+    # =============================================================
+    # Reset
+    # =============================================================
 
     def reset(self):
+
         self.total_bits_compared = 0
         self.bit_errors = 0
-        self.last_evaluated_idx = -1
-    
+
+        # Synchronization
+        self.sync_found = False
+        self.sync_index = None
+        self.inverted = False
+
+        # Peak detector
+        self.peak_active = False
+
+        self.max_correlation = 0
+        self.max_correlation_index = None
+        self.max_correlation_inverted = False
+
+        self.last_rx_bit_count = 0
+        self.last_printed_rx_bit_count = 0

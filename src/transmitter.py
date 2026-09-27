@@ -30,7 +30,7 @@ class Transmitter:
         bit_rate,
         window_duration=10e-6,
         fft_window=30e-9,
-        custom_bit_sequence=None,
+        custom_bit_sequence=[1, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0],
         rrc_rolloff=0.35,
         rrc_span=8,
         **kwargs,
@@ -132,25 +132,41 @@ class Transmitter:
     def get_bit_at_time(self, current_time):
         """
         Returns the bit active at the specified simulation time.
-        A random bit is generated only when entering a new bit period.
+
+        The transmitter first sends the custom bit sequence once.
+        After the custom sequence ends, random bits are generated.
         """
+
         if self.bit_rate <= 0:
             raise ValueError("Bit rate must be greater than zero.")
 
         current_sample = int(
             round(current_time / self.simulation_space.dt)
         )
-        current_bit_index = current_sample // self._samples_per_symbol
 
-        if current_bit_index != self.last_bit_index or self.current_bit is None:
+        current_bit_index = (
+            current_sample // self._samples_per_symbol
+        )
+
+        if (
+            current_bit_index != self.last_bit_index
+            or self.current_bit is None
+        ):
             self.last_bit_index = current_bit_index
 
-            if self.custom_bit_sequence is not None and len(self.custom_bit_sequence) > 0:
-                sequence_index = current_bit_index % len(self.custom_bit_sequence)
-                self.current_bit = int(self.custom_bit_sequence[sequence_index])
+            if (
+                self.custom_bit_sequence is not None
+                and current_bit_index < len(self.custom_bit_sequence)
+            ):
+                # Send the known sequence once
+                self.current_bit = int(
+                    self.custom_bit_sequence[current_bit_index]
+                )
             else:
+                # Generate random data after the known sequence
                 self.current_bit = random.choice([0, 1])
 
+            # Store the actual transmitted bit
             self.generated_bits.append(self.current_bit)
 
         return self.current_bit

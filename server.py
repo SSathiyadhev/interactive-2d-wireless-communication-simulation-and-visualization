@@ -131,23 +131,25 @@ class SimulationRuntime:
     def add_link_evaluator(self, tx_id, rx_id):
         lid = self.next_link_eval_id
         self.next_link_eval_id += 1
-        
+
         tx = self.transmitters.get(tx_id)
         rx = self.receivers.get(rx_id)
-        
+
         ev = None
+
         if tx and rx:
             ev = LinkEvaluator(
-                transmitter=tx, receiver=rx, speed_of_light=3.0e8,
-                filter_group_delay_samples=8, warmup_bits=2,
+                transmitter=tx,
+                receiver=rx,
+                speed_of_light=3.0e8,
             )
-            ev.sync_receiver_delay()
 
         self.link_evaluators_dict[lid] = {
             "tx_id": tx_id,
             "rx_id": rx_id,
             "evaluator": ev
         }
+
         return lid
 
     def remove_link_evaluator(self, lid):
@@ -158,19 +160,22 @@ class SimulationRuntime:
         if lid in self.link_evaluators_dict:
             tx = self.transmitters.get(tx_id)
             rx = self.receivers.get(rx_id)
+
             ev = None
+
             if tx and rx:
                 ev = LinkEvaluator(
-                    transmitter=tx, receiver=rx, speed_of_light=3.0e8,
-                    filter_group_delay_samples=8, warmup_bits=2,
-                )
-                ev.sync_receiver_delay()
+                transmitter=tx,
+                receiver=rx,
+                speed_of_light=3.0e8,
+            )
+
             self.link_evaluators_dict[lid] = {
                 "tx_id": tx_id,
                 "rx_id": rx_id,
                 "evaluator": ev
             }
-
+            
     def add_material(self, name, x_min=None, x_max=None, y_min=None, y_max=None, angle=0.0, rel_perm=None, rel_mu=None, cond=0.0):
         if x_min is None or x_max is None or y_min is None or y_max is None:
             idx = len(self.materials_list)

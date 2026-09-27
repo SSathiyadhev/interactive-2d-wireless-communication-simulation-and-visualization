@@ -1,8 +1,10 @@
 """
 src/receiver.py
 
-Defines the Receiver class using a Costas loop for blind carrier phase tracking.
-Demodulated bits are sliced at symbol intervals and exposed to LinkEvaluator.
+Defines the Receiver class using a Costas loop for blind carrier phase tracking
+and a Gardner loop for symbol-timing recovery.
+
+Recovered symbols are hard-decoded into bits and exposed to LinkEvaluator.
 """
 
 from collections import deque
@@ -10,6 +12,7 @@ import numpy as np
 
 from src.filter import Filter
 from src.costas_loop import CostasLoop
+from src.gardner_loop import GardnerLoop
 
 
 class Receiver:
@@ -77,6 +80,10 @@ class Receiver:
         # Unbounded append-only stream of decoded bits for LinkEvaluator
         self.demodulated_bits = []
 
+
+        # Simulation time at which each bit decision was made.
+        self.demodulated_bit_times = []
+
         # Front-end RF Band-pass filter
         self.bandpass_filter = Filter(
             "butterworth",
@@ -105,6 +112,14 @@ class Receiver:
             normalize="energy",
         )
 
+        # Gardner symbol-timing recovery
+        self.gardner_loop = GardnerLoop(
+            dt=self.simulation_space.dt,
+            symbol_rate=self.bit_rate,
+            loop_bandwidth_ratio=0.01,
+            damping_factor=0.707,
+        )
+
         # Costas Loop for carrier phase tracking
         self.costas_loop = CostasLoop(
             dt=self.simulation_space.dt,
@@ -112,71 +127,7 @@ class Receiver:
             bit_rate=self.bit_rate,
             rrc_rolloff=self.rrc_rolloff,
         )
-
-        # Timing alignment state for symbol slicing
-        self._propagation_delay_seconds = 0.0
-        self._update_internal_filter_delays()
-
-    def _update_internal_filter_delays(self):
-        """
-        Calculates the total delay from transmitted symbol impulse
-        to the corresponding matched-filter symbol peak.
-
-        Includes:
-            - propagation delay
-            - TX RRC group delay
-            - RX RRC group delay
-            - receiver BPF group delay
-        """
-
-        # ---------------------------------------------------------
-        # TX RRC + RX RRC
-        # ---------------------------------------------------------
-        # Each RRC has span/2 symbol periods of group delay.
-        # Therefore:
-        #
-        #     TX RRC + RX RRC = span symbol periods
-        #
-        rrc_pipeline_delay = (
-            float(self.rrc_span)
-            / self.bit_rate
-        )
-
-        # ---------------------------------------------------------
-        # Receiver RF BPF
-        # ---------------------------------------------------------
-        bpf_delay_samples = (
-            self.bandpass_filter.get_group_delay_samples(
-                self.tuned_frequency
-            )
-        )
-
-        bpf_delay_seconds = (
-            bpf_delay_samples
-            * self.simulation_space.dt
-        )
-
-        # ---------------------------------------------------------
-        # Total delay to the matched-filter symbol peak
-        # ---------------------------------------------------------
-        self._total_delay_seconds = (
-            self._propagation_delay_seconds
-            + rrc_pipeline_delay
-            + bpf_delay_seconds
-        )
-
-        self._total_delay_samples = int(
-            round(
-                self._total_delay_seconds
-                / self.simulation_space.dt
-            )
-        )
         
-    def set_estimated_propagation_delay(self, prop_delay_seconds):
-        """Allows LinkEvaluator to pass channel delay for symbol-clock alignment."""
-        self._propagation_delay_seconds = float(prop_delay_seconds)
-        self._update_internal_filter_delays()
-
     def _sample_field(self):
         t = self.simulation_space.time
         received_value = self.simulation_space.get_field(self.x, self.y)
@@ -195,52 +146,62 @@ class Receiver:
         self.baseband_values.append(baseband_value)
         return baseband_value
 
-    def _is_symbol_sampling_instant(self, current_time):
-        step_index = int(
-            round(
-                current_time / self.simulation_space.dt
-            )
+    def _decide_bit(self, recovered_symbol, decision_time):
+        """
+        Makes a BPSK hard decision from a Gardner-recovered symbol
+        and records the simulation time of the decision.
+        """
+
+        decoded_bit = (
+            0
+            if recovered_symbol >= 0.0
+            else 1
         )
 
-        if step_index < self._total_delay_samples:
-            return False
-
-        offset = (
-            step_index
-            - self._total_delay_samples
-        )
-
-        return (
-            offset % self._samples_per_symbol
-        ) == 0
-
-    def _decide_bit(self, baseband_value):
-        """
-        Thresholds matched filter output.
-        Flipped to account for 180-degree carrier phase / coordinate sign inversion.
-        """
-        decoded_bit = 0 if baseband_value >= 0.0 else 1
         self.current_bit = decoded_bit
         self.demodulated_bits.append(decoded_bit)
+        self.demodulated_bit_times.append(decision_time)
 
     def receive(self):
         """Processes one simulation timestep."""
+
         current_time, received_value = self._sample_field()
-        filtered_value = self._filter_signal(received_value)
 
-        # Costas Loop performs carrier downconversion
-        mixed_value, _ = self.costas_loop.process(filtered_value, current_time)
-        self.mixed_values.append(mixed_value)
+        filtered_value = self._filter_signal(
+            received_value
+        )
 
-        # Matched filter
-        baseband_value = self._matched_filter_stage(mixed_value)
+        # Carrier recovery / downconversion
+        mixed_value, _ = self.costas_loop.process(
+            filtered_value,
+            current_time,
+        )
 
-        # Slice bits at symbol peaks
-        if self._is_symbol_sampling_instant(current_time):
-            self._decide_bit(baseband_value)
+        self.mixed_values.append(
+            mixed_value
+        )
 
-        # Store the latest decoded bit for every simulation timestep
-        self.bit_values.append(self.current_bit)
+        # RRC matched filter
+        baseband_value = self._matched_filter_stage(
+            mixed_value
+        )
+
+        # Gardner symbol timing recovery
+        recovered_symbol = self.gardner_loop.process(
+            baseband_value
+        )
+
+        # BPSK decision
+        if recovered_symbol is not None:
+            self._decide_bit(
+                recovered_symbol,
+                current_time
+            )
+
+        # Store latest decoded bit for visualization
+        self.bit_values.append(
+            self.current_bit
+        )
 
     def _design_filter(self):
         self.bandpass_filter.set_parameters(
@@ -249,7 +210,6 @@ class Receiver:
             low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
             high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
         )
-        self._update_internal_filter_delays()
 
     def compute_filtered_fft(self):
         """
@@ -299,25 +259,54 @@ class Receiver:
 
     def set_tuned_frequency(self, value):
         self.tuned_frequency = float(value)
+
         self._design_filter()
+
+        self.costas_loop = CostasLoop(
+            dt=self.simulation_space.dt,
+            carrier_frequency=self.tuned_frequency,
+            bit_rate=self.bit_rate,
+            rrc_rolloff=self.rrc_rolloff,
+        )
 
     def get_tuned_frequency(self):
         return self.tuned_frequency
 
     def set_bit_rate(self, value):
         self.bit_rate = float(value)
+
         self._design_filter()
+
         self._samples_per_symbol = max(
             1,
-            int(round((1.0 / self.bit_rate) / self.simulation_space.dt)),
+            int(
+                round(
+                    (1.0 / self.bit_rate)
+                    / self.simulation_space.dt
+                )
+            ),
         )
+
         self.matched_filter.set_parameters(
             rolloff=self.rrc_rolloff,
             samples_per_symbol=self._samples_per_symbol,
             span=self.rrc_span,
             normalize="energy",
         )
-        self._update_internal_filter_delays()
+
+        self.gardner_loop = GardnerLoop(
+            dt=self.simulation_space.dt,
+            symbol_rate=self.bit_rate,
+            loop_bandwidth_ratio=0.01,
+            damping_factor=0.707,
+        )
+
+        self.costas_loop = CostasLoop(
+            dt=self.simulation_space.dt,
+            carrier_frequency=self.tuned_frequency,
+            bit_rate=self.bit_rate,
+            rrc_rolloff=self.rrc_rolloff,
+        )
 
     def get_bit_rate(self):
         return self.bit_rate
@@ -337,14 +326,14 @@ class Receiver:
     def get_demodulated_bits(self):
         return self.demodulated_bits
 
+    def get_demodulated_bit_times(self):
+        return self.demodulated_bit_times
+
     def get_baseband_values(self):
         return list(self.baseband_values)
 
     def get_observation_times(self):
         return list(self.time_values)
-
-    def get_estimated_total_delay_seconds(self):
-        return self._total_delay_seconds
 
     def get_filtered_fft_values(self):
         return list(self.filtered_fft_values)
