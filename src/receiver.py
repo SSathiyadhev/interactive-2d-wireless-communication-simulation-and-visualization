@@ -115,9 +115,7 @@ class Receiver:
         # Gardner symbol-timing recovery
         self.gardner_loop = GardnerLoop(
             dt=self.simulation_space.dt,
-            symbol_rate=self.bit_rate,
-            loop_bandwidth_ratio=0.01,
-            damping_factor=0.707,
+            symbol_rate=self.bit_rate
         )
 
         # Costas Loop for carrier phase tracking
@@ -297,8 +295,6 @@ class Receiver:
         self.gardner_loop = GardnerLoop(
             dt=self.simulation_space.dt,
             symbol_rate=self.bit_rate,
-            loop_bandwidth_ratio=0.01,
-            damping_factor=0.707,
         )
 
         self.costas_loop = CostasLoop(
@@ -306,6 +302,57 @@ class Receiver:
             carrier_frequency=self.tuned_frequency,
             bit_rate=self.bit_rate,
             rrc_rolloff=self.rrc_rolloff,
+        )
+
+    def set_observation_window(self, observation_window):
+        observation_window = float(observation_window)
+
+        if observation_window <= 0:
+            raise ValueError(
+                "Observation window duration must be greater than zero."
+            )
+
+        self.observation_window = observation_window
+
+        max_samples = max(
+            1,
+            int(
+                np.ceil(
+                    self.observation_window
+                    / self.simulation_space.dt
+                )
+            ),
+        )
+
+        self.time_values = deque(maxlen=max_samples)
+        self.received_values = deque(maxlen=max_samples)
+        self.filtered_values = deque(maxlen=max_samples)
+        self.mixed_values = deque(maxlen=max_samples)
+        self.baseband_values = deque(maxlen=max_samples)
+        self.bit_values = deque(maxlen=max_samples)
+
+    def set_fft_window(self, fft_window):
+        fft_window = float(fft_window)
+
+        if fft_window <= 0:
+            raise ValueError(
+                "FFT window must be strictly positive."
+            )
+
+        self.fft_window = fft_window
+
+        fft_samples = max(
+            8,
+            int(
+                np.ceil(
+                    self.fft_window
+                    / self.simulation_space.dt
+                )
+            ),
+        )
+
+        self.filtered_fft_values = deque(
+            maxlen=fft_samples
         )
 
     def get_bit_rate(self):
@@ -334,6 +381,12 @@ class Receiver:
 
     def get_observation_times(self):
         return list(self.time_values)
+
+    def get_observation_window(self):
+        return self.observation_window
+
+    def get_fft_window(self):
+        return self.fft_window
 
     def get_filtered_fft_values(self):
         return list(self.filtered_fft_values)

@@ -87,6 +87,12 @@ class Material:
             "relative_permeability": 1.0,
             "conductivity": 0.001,
         },
+
+        "water": {
+            "relative_permittivity": 80.0,
+            "relative_permeability": 1.0,
+            "conductivity": 0.01,
+        },
     }
 
     def __init__(

@@ -107,6 +107,32 @@ class ObservationPoint:
         samples = np.asarray(self.signal_history)
         return float(np.sqrt(np.mean(samples**2)))
 
+    def set_fft_window(self, buffer_duration):
+        buffer_duration = float(buffer_duration)
+
+        if buffer_duration <= 0:
+            raise ValueError(
+                "FFT window duration must be strictly positive."
+            )
+
+        self.buffer_duration = buffer_duration
+
+        self.buffer_size = max(
+            32,
+            int(
+                round(
+                    self.buffer_duration
+                    / self.simulation_space.dt
+                )
+            ),
+        )
+
+        self.time_history = deque(maxlen=self.buffer_size)
+        self.signal_history = deque(maxlen=self.buffer_size)
+
+    def get_fft_window(self):
+        return self.buffer_duration
+
     # =============================================================
     # FAST FOURIER TRANSFORM (FFT) & SPECTRUM
     # =============================================================

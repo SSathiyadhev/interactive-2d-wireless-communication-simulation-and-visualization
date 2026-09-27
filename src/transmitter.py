@@ -381,6 +381,33 @@ class Transmitter:
 
         return frequencies, amplitudes
 
+    def set_fft_window(self, fft_window):
+        fft_window = float(fft_window)
+
+        if fft_window <= 0:
+            raise ValueError(
+                "FFT window must be strictly positive."
+            )
+
+        self.fft_window = fft_window
+
+        fft_samples = max(
+            8,
+            int(
+                np.ceil(
+                    self.fft_window
+                    / self.simulation_space.dt
+                )
+            ),
+        )
+
+        self.bpsk_fft_values = deque(
+            maxlen=fft_samples
+        )
+
+    def get_fft_window(self):
+        return self.fft_window
+
     # =============================================================
     # BUFFER ACCESSORS (for UI Oscilloscope & LinkEvaluator)
     # =============================================================
