@@ -55,6 +55,8 @@ class ObservationPoint:
 
         # Running energy accumulation
         self._cumulative_energy = 0.0
+        self.fft_window_type = "hann"
+        self.fft_zero_padding_factor = 4
 
     # =============================================================
     # DATA ACQUISITION
@@ -133,71 +135,144 @@ class ObservationPoint:
     def get_fft_window(self):
         return self.buffer_duration
 
+    def set_fft_parameters(
+        self,
+        window_type=None,
+        zero_padding_factor=None,
+    ):
+        if window_type is not None:
+            window_type = str(window_type).lower()
+
+            if window_type not in (
+                "rect",
+                "hann",
+                "hamming",
+                "blackman",
+            ):
+                raise ValueError(
+                    f"Unsupported FFT window type: {window_type}"
+                )
+
+            self.fft_window_type = window_type
+
+        if zero_padding_factor is not None:
+            zero_padding_factor = int(zero_padding_factor)
+
+            if zero_padding_factor < 1:
+                raise ValueError(
+                    "Zero-padding factor must be >= 1."
+                )
+
+            self.fft_zero_padding_factor = zero_padding_factor
+
+
+    def get_fft_parameters(self):
+        return (
+            self.fft_window_type,
+            self.fft_zero_padding_factor,
+        )
+
     # =============================================================
     # FAST FOURIER TRANSFORM (FFT) & SPECTRUM
     # =============================================================
 
-    def compute_fft(self, window_type="hann", zero_padding_factor=1):
+    def compute_fft(self):
         """
-        Computes the single-sided amplitude spectrum of the stored signal buffer.
-
-        Parameters:
-            window_type: str ('rect', 'hann', 'hamming', 'blackman')
-            zero_padding_factor: int (>= 1, interpolates frequency bins)
+        Computes the single-sided amplitude spectrum of the stored signal.
 
         Returns:
-            frequencies: 1D np.ndarray of positive frequencies in Hz
-            amplitudes: 1D np.ndarray of linear magnitude values |X(f)|
+            frequencies
+            amplitudes
+            frequency_bin_spacing
+            true_frequency_resolution
         """
+
         n = len(self.signal_history)
+
         if n < 8:
-            return np.array([]), np.array([])
+            return (
+                np.array([]),
+                np.array([]),
+                0.0,
+                0.0,
+            )
 
-        signal = np.asarray(self.signal_history, dtype=np.float64)
+        signal = np.asarray(
+            self.signal_history,
+            dtype=np.float64,
+        )
 
-        # Apply windowing to minimize spectral leakage
-        if window_type == "hann":
+        # Window
+        if self.fft_window_type == "hann":
             window = np.hanning(n)
-        elif window_type == "hamming":
+        elif self.fft_window_type == "hamming":
             window = np.hamming(n)
-        elif window_type == "blackman":
+        elif self.fft_window_type == "blackman":
             window = np.blackman(n)
         else:
             window = np.ones(n)
 
         windowed_signal = signal * window
 
-        # Window coherent gain correction
-        coherent_gain = np.sum(window) / n if np.sum(window) > 0 else 1.0
+        # Coherent gain
+        window_sum = np.sum(window)
+        coherent_gain = (
+            window_sum / n
+            if window_sum > 0
+            else 1.0
+        )
 
-        n_fft = int(n * max(1, int(zero_padding_factor)))
+        # FFT
+        n_fft = n * self.fft_zero_padding_factor
         dt = self.simulation_space.dt
 
-        # Compute real FFT (rfft yields only non-negative frequencies)
-        fft_values = np.fft.rfft(windowed_signal, n=n_fft)
-        frequencies = np.fft.rfftfreq(n_fft, d=dt)
+        fft_values = np.fft.rfft(
+            windowed_signal,
+            n=n_fft,
+        )
 
-        # Normalize magnitude to physical peak amplitude
-        amplitudes = (2.0 * np.abs(fft_values) / n) / coherent_gain
-        amplitudes[0] /= 2.0  # DC component is not doubled
+        frequencies = np.fft.rfftfreq(
+            n_fft,
+            d=dt,
+        )
 
-        return frequencies, amplitudes
+        amplitudes = (
+            2.0 * np.abs(fft_values) / n
+        ) / coherent_gain
 
-    def get_peak_frequency(self, window_type="hann"):
+        amplitudes[0] /= 2.0
+
+        frequency_bin_spacing = (
+            frequencies[1] - frequencies[0]
+            if len(frequencies) > 1
+            else 0.0
+        )
+
+        true_frequency_resolution = 1.0 / (n * dt)
+
+        return (
+            frequencies,
+            amplitudes,
+            frequency_bin_spacing,
+            true_frequency_resolution,
+        )
+
+    def get_peak_frequency(self):
         """
-        Finds the dominant frequency component (excluding DC).
-
-        Returns:
-            peak_freq_hz: Frequency with the highest spectral peak in Hz.
-            peak_amplitude: Amplitude of that peak.
+        Finds the dominant frequency component excluding DC.
         """
-        freqs, amps = self.compute_fft(window_type=window_type)
+
+        freqs, amps, _, _ = self.compute_fft()
+
         if len(freqs) <= 1:
             return 0.0, 0.0
 
-        # Ignore DC bin (index 0)
         peak_idx = np.argmax(amps[1:]) + 1
-        return float(freqs[peak_idx]), float(amps[peak_idx])
+
+        return (
+            float(freqs[peak_idx]),
+            float(amps[peak_idx]),
+        )
 
     # =============================================================
     # STATE MANAGEMENT

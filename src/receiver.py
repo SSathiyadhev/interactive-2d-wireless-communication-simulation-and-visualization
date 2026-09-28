@@ -35,9 +35,13 @@ class Receiver:
         self.y = float(y)
         self.tuned_frequency = float(tuned_frequency)
         self.bit_rate = float(bit_rate)
+        self.rrc_rolloff = float(rrc_rolloff)
+        self.rrc_span = int(rrc_span)
         self.observation_window = float(observation_window)
 
         self.fft_window = float(fft_window)
+        self.fft_window_type = "hann"
+        self.fft_zero_padding_factor = 4
 
         if self.fft_window <= 0:
             raise ValueError("FFT window must be strictly positive.")
@@ -85,17 +89,21 @@ class Receiver:
         self.demodulated_bit_times = []
 
         # Front-end RF Band-pass filter
+        rf_bandwidth = (
+            0.5
+            * self.bit_rate
+            * (1.0 + self.rrc_rolloff)
+            * 1.10
+        )
+
         self.bandpass_filter = Filter(
             "butterworth",
             self.simulation_space.dt,
             order=4,
             filter_response="bandpass",
-            low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
-            high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
+            low_cutoff_frequency=self.tuned_frequency - rf_bandwidth,
+            high_cutoff_frequency=self.tuned_frequency + rf_bandwidth,
         )
-
-        self.rrc_rolloff = float(rrc_rolloff)
-        self.rrc_span = int(rrc_span)
 
         self._samples_per_symbol = max(
             1,
@@ -202,24 +210,30 @@ class Receiver:
         )
 
     def _design_filter(self):
+        rf_bandwidth = (
+            0.5
+            * self.bit_rate
+            * (1.0 + self.rrc_rolloff)
+            * 1.10
+        )
+
         self.bandpass_filter.set_parameters(
             order=4,
             filter_response="bandpass",
-            low_cutoff_frequency=self.tuned_frequency - self.bit_rate,
-            high_cutoff_frequency=self.tuned_frequency + self.bit_rate,
+            low_cutoff_frequency=self.tuned_frequency - rf_bandwidth,
+            high_cutoff_frequency=self.tuned_frequency + rf_bandwidth,
         )
 
     def compute_filtered_fft(self):
         """
-        Computes the FFT of the signal after the RF band-pass filter.
+        Computes the single-sided amplitude spectrum of the
+        RF band-pass filtered signal.
 
-        Returns
-        -------
-        frequencies : np.ndarray
-            Non-negative frequency values in Hz.
-
-        amplitudes : np.ndarray
-            Single-sided FFT amplitude spectrum.
+        Returns:
+            frequencies
+            amplitudes
+            frequency_bin_spacing
+            true_frequency_resolution
         """
 
         samples = np.asarray(
@@ -227,26 +241,70 @@ class Receiver:
             dtype=np.float64,
         )
 
-        if len(samples) < 8:
-            return np.array([]), np.array([])
-
         n = len(samples)
 
-        fft_values = np.fft.rfft(samples)
+        if n < 8:
+            return (
+                np.array([]),
+                np.array([]),
+                0.0,
+                0.0,
+            )
+
+        # Window
+        if self.fft_window_type == "hann":
+            window = np.hanning(n)
+        elif self.fft_window_type == "hamming":
+            window = np.hamming(n)
+        elif self.fft_window_type == "blackman":
+            window = np.blackman(n)
+        else:
+            window = np.ones(n)
+
+        windowed_signal = samples * window
+
+        # Coherent gain correction
+        window_sum = np.sum(window)
+        coherent_gain = (
+            window_sum / n
+            if window_sum > 0
+            else 1.0
+        )
+
+        # FFT
+        n_fft = n * self.fft_zero_padding_factor
+        dt = self.simulation_space.dt
+
+        fft_values = np.fft.rfft(
+            windowed_signal,
+            n=n_fft,
+        )
 
         frequencies = np.fft.rfftfreq(
-            n,
-            d=self.simulation_space.dt,
+            n_fft,
+            d=dt,
         )
 
         amplitudes = (
             2.0 * np.abs(fft_values) / n
-        )
+        ) / coherent_gain
 
-        # DC is not doubled.
         amplitudes[0] /= 2.0
 
-        return frequencies, amplitudes
+        frequency_bin_spacing = (
+            frequencies[1] - frequencies[0]
+            if len(frequencies) > 1
+            else 0.0
+        )
+
+        true_frequency_resolution = 1.0 / (n * dt)
+
+        return (
+            frequencies,
+            amplitudes,
+            frequency_bin_spacing,
+            true_frequency_resolution,
+        )
 
     def set_position(self, x, y):
         self.x = float(x)
@@ -387,6 +445,43 @@ class Receiver:
 
     def get_fft_window(self):
         return self.fft_window
+
+    def set_fft_parameters(
+        self,
+        window_type=None,
+        zero_padding_factor=None,
+    ):
+        if window_type is not None:
+            window_type = str(window_type).lower()
+
+            if window_type not in (
+                "rect",
+                "hann",
+                "hamming",
+                "blackman",
+            ):
+                raise ValueError(
+                    f"Unsupported FFT window type: {window_type}"
+                )
+
+            self.fft_window_type = window_type
+
+        if zero_padding_factor is not None:
+            zero_padding_factor = int(zero_padding_factor)
+
+            if zero_padding_factor < 1:
+                raise ValueError(
+                    "Zero-padding factor must be >= 1."
+                )
+
+            self.fft_zero_padding_factor = zero_padding_factor
+
+
+    def get_fft_parameters(self):
+        return (
+            self.fft_window_type,
+            self.fft_zero_padding_factor,
+        )
 
     def get_filtered_fft_values(self):
         return list(self.filtered_fft_values)

@@ -32,30 +32,6 @@ def safe_call(obj, *names, default=0.0):
                 return attr
     return default
 
-
-def amplitude_spectrum(samples, dt, f_max=3.0e9, zero_pad=4):
-    """Single-sided amplitude spectrum of the newest `len(samples)` samples.
-
-    Hann window (low leakage) with coherent-gain correction so a sine of
-    amplitude A reads A, and zero-padding (x4) so an off-bin tone is not
-    read low by scalloping. Returns (amplitudes <= f_max, bin spacing in Hz,
-    true frequency resolution 1/(n*dt) in Hz).
-    """
-    x = np.asarray(samples, dtype=np.float64)
-    n = len(x)
-    if n < 8:
-        return [], 0.0, 0.0
-    w = np.hanning(n)
-    gain = w.sum() / n
-    n_fft = n * int(zero_pad)
-    spec = np.fft.rfft(x * w, n=n_fft)
-    freqs = np.fft.rfftfreq(n_fft, d=dt)
-    amps = 2.0 * np.abs(spec) / n / gain
-    amps[0] /= 2.0                      # DC is not doubled
-    keep = freqs <= f_max
-    return amps[keep].tolist(), float(freqs[1]), 1.0 / (n * dt)
-
-
 def clamp_window_ns(value):
     """FFT / scope window from the UI, kept to a sane range."""
     return min(500.0, max(2.0, float(value)))
@@ -348,7 +324,14 @@ class SimulationRuntime:
     def status(self):
         tx_list = []
         for tid, tx in self.transmitters.items():
-            fft_spec, tx_df, tx_res = amplitude_spectrum(tx.get_bpsk_fft_values(), self.space.dt)
+            tx_freqs, tx_amps, tx_df, tx_res = tx.compute_bpsk_fft()
+
+            if len(tx_freqs) > 0:
+                keep = tx_freqs <= 3.0e9
+                fft_spec = tx_amps[keep].tolist()
+            else:
+                fft_spec = []
+
             tx_list.append({
                 "id": tid, "x": float(tx.x), "y": float(tx.y),
                 "fc": tx.get_carrier_frequency(),
@@ -366,7 +349,13 @@ class SimulationRuntime:
 
         rx_list = []
         for rid, r in self.receivers.items():
-            rx_fft_spec, rx_df, rx_res = amplitude_spectrum(r.get_received_values(), self.space.dt)
+            rx_freqs, rx_amps, rx_df, rx_res = r.compute_filtered_fft()
+
+            if len(rx_freqs) > 0:
+                keep = rx_freqs <= 3.0e9
+                rx_fft_spec = rx_amps[keep].tolist()
+            else:
+                rx_fft_spec = []
 
             rx_list.append({
                 "id": rid, "x": float(r.x), "y": float(r.y),
@@ -385,16 +374,21 @@ class SimulationRuntime:
 
         obs_list = []
         for oid, op in self.observation_points.items():
-            obs_df = 0.0
-            n_obs = len(op.signal_history)
-            obs_res = 1.0 / (n_obs * self.space.dt) if n_obs else 0.0
             try:
-                freqs, amps = op.compute_fft(window_type="hann", zero_padding_factor=4)
-                fft_data = amps[freqs <= 3.0e9].tolist() if len(amps) > 0 else []
-                obs_df = float(freqs[1] - freqs[0]) if len(freqs) > 1 else 0.0
-                peak_f, peak_a = op.get_peak_frequency(window_type="hann")
+                freqs, amps, obs_df, obs_res = op.compute_fft()
+
+                fft_data = (
+                    amps[freqs <= 3.0e9].tolist()
+                    if len(amps) > 0
+                    else []
+                )
+
+                peak_f, peak_a = op.get_peak_frequency()
+
             except Exception:
                 fft_data = []
+                obs_df = 0.0
+                obs_res = 0.0
                 peak_f, peak_a = 0.0, 0.0
             
             obs_list.append({

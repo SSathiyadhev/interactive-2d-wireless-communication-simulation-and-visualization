@@ -60,6 +60,8 @@ class Transmitter:
         self.window_duration = float(window_duration)
 
         self.fft_window = float(fft_window)
+        self.fft_window_type = "hann"
+        self.fft_zero_padding_factor = 4
 
         if self.fft_window <= 0:
             raise ValueError("FFT window must be strictly positive.")
@@ -364,7 +366,14 @@ class Transmitter:
 
     def compute_bpsk_fft(self):
         """
-        Computes the FFT of the transmitted RRC-shaped BPSK RF waveform.
+        Computes the single-sided amplitude spectrum of the transmitted
+        RRC-shaped BPSK RF waveform.
+
+        Returns:
+            frequencies
+            amplitudes
+            frequency_bin_spacing
+            true_frequency_resolution
         """
 
         samples = np.asarray(
@@ -372,25 +381,72 @@ class Transmitter:
             dtype=np.float64,
         )
 
-        if len(samples) < 8:
-            return np.array([]), np.array([])
-
         n = len(samples)
 
-        fft_values = np.fft.rfft(samples)
+        if n < 8:
+            return (
+                np.array([]),
+                np.array([]),
+                0.0,
+                0.0,
+            )
+
+        # Window
+        if self.fft_window_type == "hann":
+            window = np.hanning(n)
+        elif self.fft_window_type == "hamming":
+            window = np.hamming(n)
+        elif self.fft_window_type == "blackman":
+            window = np.blackman(n)
+        else:
+            window = np.ones(n)
+
+        windowed_signal = samples * window
+
+        # Coherent gain correction
+        window_sum = np.sum(window)
+        coherent_gain = (
+            window_sum / n
+            if window_sum > 0
+            else 1.0
+        )
+
+        # FFT
+        n_fft = n * self.fft_zero_padding_factor
+        dt = self.simulation_space.dt
+
+        fft_values = np.fft.rfft(
+            windowed_signal,
+            n=n_fft,
+        )
 
         frequencies = np.fft.rfftfreq(
-            n,
-            d=self.simulation_space.dt,
+            n_fft,
+            d=dt,
         )
 
+        # Single-sided amplitude
         amplitudes = (
             2.0 * np.abs(fft_values) / n
-        )
+        ) / coherent_gain
 
         amplitudes[0] /= 2.0
 
-        return frequencies, amplitudes
+        # FFT frequency information
+        frequency_bin_spacing = (
+            frequencies[1] - frequencies[0]
+            if len(frequencies) > 1
+            else 0.0
+        )
+
+        true_frequency_resolution = 1.0 / (n * dt)
+
+        return (
+            frequencies,
+            amplitudes,
+            frequency_bin_spacing,
+            true_frequency_resolution,
+        )
 
     def set_fft_window(self, fft_window):
         fft_window = float(fft_window)
@@ -418,6 +474,43 @@ class Transmitter:
 
     def get_fft_window(self):
         return self.fft_window
+
+    def set_fft_parameters(
+        self,
+        window_type=None,
+        zero_padding_factor=None,
+    ):
+        if window_type is not None:
+            window_type = str(window_type).lower()
+
+            if window_type not in (
+                "rect",
+                "hann",
+                "hamming",
+                "blackman",
+            ):
+                raise ValueError(
+                    f"Unsupported FFT window type: {window_type}"
+                )
+
+            self.fft_window_type = window_type
+
+        if zero_padding_factor is not None:
+            zero_padding_factor = int(zero_padding_factor)
+
+            if zero_padding_factor < 1:
+                raise ValueError(
+                    "Zero-padding factor must be >= 1."
+                )
+
+            self.fft_zero_padding_factor = zero_padding_factor
+
+
+    def get_fft_parameters(self):
+        return (
+            self.fft_window_type,
+            self.fft_zero_padding_factor,
+        )
 
     # =============================================================
     # BUFFER ACCESSORS (for UI Oscilloscope & LinkEvaluator)
