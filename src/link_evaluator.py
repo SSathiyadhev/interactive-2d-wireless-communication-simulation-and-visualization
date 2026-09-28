@@ -52,6 +52,7 @@ class LinkEvaluator:
         self.sync_found = False
         self.sync_index = None
         self.inverted = False
+        self.sync_decision_time = None
 
         # Peak detection state
         self.peak_active = False
@@ -269,10 +270,7 @@ class LinkEvaluator:
 
         if absolute_correlation < lower_threshold:
 
-            if (
-                self.max_correlation_index
-                is not None
-            ):
+            if self.max_correlation_index is not None:
 
                 self.sync_found = True
 
@@ -282,6 +280,62 @@ class LinkEvaluator:
 
                 self.inverted = (
                     self.max_correlation_inverted
+                )
+
+                # -----------------------------------------------------
+                # Exact simulation time when synchronization was decided
+                # -----------------------------------------------------
+
+                decision_rx_index = len(rx_bits) - 1
+
+                bit_times = getattr(
+                    self.rx,
+                    "demodulated_bit_times",
+                    [],
+                )
+
+                if decision_rx_index < len(bit_times):
+                    self.sync_decision_time = (
+                        bit_times[decision_rx_index]
+                    )
+
+                print(
+                    "\n========== SYNC DECISION =========="
+                )
+                print(
+                    f"Decision time       : "
+                    f"{self.sync_decision_time * 1e9:.6f} ns"
+                )
+                print(
+                    f"Decision RX index   : "
+                    f"{decision_rx_index}"
+                )
+                print(
+                    f"Sync index          : "
+                    f"{self.sync_index}"
+                )
+                print(
+                    f"Decision correlation: "
+                    f"{correlation}"
+                )
+                print(
+                    f"Decision |corr|     : "
+                    f"{absolute_correlation}"
+                )
+                print(
+                    f"Peak correlation    : "
+                    f"{self.max_correlation}"
+                )
+                print(
+                    f"Lower threshold     : "
+                    f"{lower_threshold}"
+                )
+                print(
+                    f"Polarity            : "
+                    f"{'INVERTED' if self.inverted else 'NORMAL'}"
+                )
+                print(
+                    "===================================\n"
                 )
 
             self.peak_active = False
@@ -296,13 +350,11 @@ class LinkEvaluator:
         rx_bits,
     ):
         """
-        Prints the raw TX and RX bit sequences with their own
-        indices aligned from index 0.
+        Prints TX and RX bits with the simulation time at which
+        each RX bit decision was made.
 
-        TX[0] is shown beside RX[0],
-        TX[1] beside RX[1], and so on.
-
-        No synchronization offset or polarity correction is applied.
+        RX decision time comes from:
+            self.rx.demodulated_bit_times
         """
 
         if (
@@ -311,11 +363,17 @@ class LinkEvaluator:
         ):
             return
 
-        print("\nINDEX   TX   RX")
+        print("\nINDEX   TX   RX   RX DECISION TIME")
 
         max_length = max(
             len(tx_bits),
             len(rx_bits),
+        )
+
+        bit_times = getattr(
+            self.rx,
+            "demodulated_bit_times",
+            [],
         )
 
         for i in range(max_length):
@@ -332,8 +390,18 @@ class LinkEvaluator:
                 else "-"
             )
 
+            if i < len(bit_times):
+                decision_time = (
+                    f"{bit_times[i] * 1e9:.6f} ns"
+                )
+            else:
+                decision_time = "-"
+
             print(
-                f"{i:5d}   {tx_bit}    {rx_bit}"
+                f"{i:5d}   "
+                f"{tx_bit}    "
+                f"{rx_bit}   "
+                f"{decision_time}"
             )
 
         print()
@@ -480,6 +548,9 @@ class LinkEvaluator:
             / self.total_bits_compared
         )
 
+    def get_sync_decision_time(self):
+        return self.sync_decision_time
+
     # =============================================================
     # Reset
     # =============================================================
@@ -493,6 +564,7 @@ class LinkEvaluator:
         self.sync_found = False
         self.sync_index = None
         self.inverted = False
+        self.sync_decision_time = None
 
         # Peak detector
         self.peak_active = False

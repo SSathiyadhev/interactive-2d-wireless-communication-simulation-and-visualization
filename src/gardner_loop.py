@@ -2,9 +2,7 @@
 gardner_loop.py
 
 Streaming Gardner symbol-timing recovery for an oversampled,
-RRC-matched baseband signal.
-
-The timing loop operates once per recovered symbol.
+RRC-matched real BPSK baseband signal.
 
 Processing chain:
 
@@ -17,14 +15,49 @@ Processing chain:
        Gardner TED
             |
             v
-       PI timing loop
+    normalized timing error
             |
             v
-       timing NCO
+       2nd-order PI loop
             |
-            v
-    recovered symbol
+            +----------------------+
+            |                      |
+            v                      v
+      timing-rate             timing-phase
+       correction              correction
+            |                      |
+            +----------+-----------+
+                       |
+                       v
+                  timing NCO
+                       |
+                       v
+              fractional timing
+                       |
+                       v
+                recovered symbol
+
+
+Important
+---------
+The receiver does NOT need to know:
+
+    - transmitter distance
+    - propagation delay
+    - transmit start time
+
+The Gardner loop detects the timing offset from the received
+waveform itself.
+
+For BPSK:
+
+    symbol_rate = bit_rate
+
+The Gardner loop operates on symbol timing, not RF carrier phase.
+
+The Costas loop should handle carrier phase/frequency recovery.
 """
+
 
 import numpy as np
 
@@ -35,11 +68,16 @@ class GardnerLoop:
         self,
         dt,
         symbol_rate,
-        loop_bandwidth_ratio=0.05,
+        loop_bandwidth_ratio=0.01,
         damping_factor=0.707,
+        ted_gain=1.0,
         initial_timing=None,
         buffer_size=1024,
     ):
+        # =========================================================
+        # BASIC PARAMETERS
+        # =========================================================
+
         self.dt = float(dt)
         self.symbol_rate = float(symbol_rate)
 
@@ -50,6 +88,14 @@ class GardnerLoop:
         self.damping_factor = float(
             damping_factor
         )
+
+        # Effective gain of the normalized Gardner TED.
+        #
+        # Start with 1.0.
+        #
+        # It is kept explicit because the loop-filter gains
+        # depend on detector gain.
+        self.ted_gain = float(ted_gain)
 
         if self.dt <= 0:
             raise ValueError(
@@ -73,23 +119,48 @@ class GardnerLoop:
                 "than zero."
             )
 
-        # =========================================================
-        # TIMING PARAMETERS
-        # =========================================================
+        if self.ted_gain <= 0:
+            raise ValueError(
+                "ted_gain must be greater "
+                "than zero."
+            )
 
-        # Symbol period.
-        self.symbol_period = (
-            1.0 / self.symbol_rate
+        if buffer_size < 16:
+            raise ValueError(
+                "buffer_size must be at least 16."
+            )
+
+        self.buffer_size = int(
+            buffer_size
         )
 
-        # Nominal number of input samples per symbol.
+        # =========================================================
+        # SYMBOL TIMING
+        # =========================================================
+
+        # Symbol period:
         #
-        # This does not have to be an integer.
+        #       Ts = 1 / Rs
+        #
+        self.symbol_period = (
+            1.0
+            / self.symbol_rate
+        )
+
+        # Nominal number of input samples per symbol:
+        #
+        #       SPS = Ts / dt
+        #
         self.nominal_samples_per_symbol = (
-            self.symbol_period / self.dt
+            self.symbol_period
+            /
+            self.dt
         )
 
         # Current timing-rate estimate.
+        #
+        # This is allowed to change only through the integral
+        # timing-rate path.
         self.samples_per_symbol = (
             self.nominal_samples_per_symbol
         )
@@ -98,76 +169,120 @@ class GardnerLoop:
         # TIMING LOOP BANDWIDTH
         # =========================================================
 
-        # Timing-loop bandwidth in Hz.
+        # Timing bandwidth is scaled from symbol rate:
+        #
+        #       Bn = ratio * Rs
+        #
         self.loop_bandwidth = (
             self.loop_bandwidth_ratio
-            * self.symbol_rate
+            *
+            self.symbol_rate
         )
 
-        # Convert loop bandwidth to angular frequency.
+        # Angular loop bandwidth.
         self.natural_frequency = (
             2.0
-            * np.pi
-            * self.loop_bandwidth
+            *
+            np.pi
+            *
+            self.loop_bandwidth
         )
 
-        # The timing loop is updated once per recovered symbol,
-        # therefore the loop update interval is the symbol period,
-        # NOT the simulation dt.
+        # The loop updates once per recovered symbol.
         self.loop_update_period = (
             self.symbol_period
         )
 
         # =========================================================
-        # DISCRETE TIMING PI COEFFICIENTS
-        # =========================================================
-        #
-        # The Gardner timing error is normalized before entering
-        # this loop, so the timing-detector gain is treated as
-        # unity for the loop design.
-        #
-        # The coefficients below are the standard second-order
-        # discrete PI form used for a normalized type-II loop.
+        # SECOND-ORDER LOOP COEFFICIENTS
         # =========================================================
 
+        #
+        # Discrete second-order timing loop design.
+        #
+        # theta:
+        #
+        #     wn * T
+        #
         theta = (
             self.natural_frequency
-            * self.loop_update_period
-            / (
+            *
+            self.loop_update_period
+            /
+            (
                 self.damping_factor
-                + 0.25
-                / self.damping_factor
+                +
+                0.25
+                /
+                self.damping_factor
             )
         )
 
         denominator = (
             1.0
-            + 2.0
-            * self.damping_factor
-            * theta
-            + theta * theta
+            +
+            2.0
+            *
+            self.damping_factor
+            *
+            theta
+            +
+            theta
+            *
+            theta
         )
 
-        self.kp = (
+        # Raw PI coefficients.
+        kp_base = (
             4.0
-            * self.damping_factor
-            * theta
-            / denominator
+            *
+            self.damping_factor
+            *
+            theta
+            /
+            denominator
+        )
+
+        ki_base = (
+            4.0
+            *
+            theta
+            *
+            theta
+            /
+            denominator
+        )
+
+        # =========================================================
+        # TED GAIN COMPENSATION
+        # =========================================================
+
+        # The loop sees:
+        #
+        #       timing_error = Kd * timing_phase_error
+        #
+        # Therefore compensate the PI gains by Kd.
+        #
+        self.kp = (
+            kp_base
+            /
+            self.ted_gain
         )
 
         self.ki = (
-            4.0
-            * theta
-            * theta
-            / denominator
+            ki_base
+            /
+            self.ted_gain
         )
 
         # =========================================================
-        # TIMING POSITION
+        # TIMING NCO STATE
         # =========================================================
 
-        # If not supplied, timing is initialized when processing
-        # begins.
+        # Absolute fractional position of the current recovered
+        # symbol in the input sample stream.
+        #
+        # This is the actual timing phase state.
         if initial_timing is None:
             self.timing_position = None
         else:
@@ -175,11 +290,27 @@ class GardnerLoop:
                 initial_timing
             )
 
+        # Position of the previously recovered symbol.
+        self.previous_timing_position = None
+
         # =========================================================
-        # TIMING LOOP STATE
+        # TIMING LOOP STATES
         # =========================================================
 
+        # Integral state.
+        #
+        # This controls average timing rate / SPS.
         self.integrator_state = 0.0
+
+        # Immediate proportional timing correction.
+        #
+        # Units: input samples.
+        self.phase_correction = 0.0
+
+        # Current timing-rate correction.
+        #
+        # Units: samples/symbol.
+        self.timing_rate_correction = 0.0
 
         # =========================================================
         # PREVIOUS SYMBOL
@@ -188,105 +319,96 @@ class GardnerLoop:
         self.previous_symbol = None
 
         # =========================================================
-        # SIGNAL POWER ESTIMATE
+        # SIGNAL POWER
         # =========================================================
 
-        # Used to normalize the Gardner TED output so that loop
-        # gains do not depend strongly on signal amplitude.
         self.signal_power = 0.0
 
-        # Exponential averaging coefficient.
         self.power_alpha = 0.01
 
         # =========================================================
-        # STREAMING INPUT BUFFER
+        # INPUT BUFFER
         # =========================================================
 
         self.buffer = []
 
-        # Absolute input-sample index represented by buffer[0].
+        # Absolute sample index represented by buffer[0].
         self.buffer_start_index = 0
 
-        self.buffer_size = int(buffer_size)
-
-        if self.buffer_size < 16:
-            raise ValueError(
-                "buffer_size must be at least 16."
-            )
-
         # =========================================================
-        # DIAGNOSTIC STATE
+        # DIAGNOSTICS
         # =========================================================
 
         self.timing_error = 0.0
-        self.timing_correction = 0.0
 
     # =============================================================
     # TIMING INITIALIZATION
     # =============================================================
 
     def _initialize_timing(self):
-        """
-        Initializes the nominal symbol timing.
-
-        The initial estimate is one nominal symbol period into
-        the matched-filter output stream.
-
-        Gardner subsequently corrects the timing phase.
-        """
 
         if self.timing_position is not None:
             return
 
+        # Start at nominal symbol spacing.
+        #
+        # Gardner will subsequently move this timing position
+        # toward the actual received-symbol timing.
         self.timing_position = (
             self.nominal_samples_per_symbol
         )
 
     # =============================================================
-    # STREAM INPUT
+    # INPUT BUFFER
     # =============================================================
 
-    def _append_sample(self, sample):
-        """
-        Appends one RRC matched-filter output sample.
-        """
+    def _append_sample(
+        self,
+        sample,
+    ):
 
         self.buffer.append(
             float(sample)
         )
 
     # =============================================================
-    # SIGNAL POWER
+    # SIGNAL POWER ESTIMATION
     # =============================================================
 
-    def _update_signal_power(self, sample):
-        """
-        Updates the exponentially averaged baseband signal power.
-        """
+    def _update_signal_power(
+        self,
+        sample,
+    ):
 
-        sample_power = sample * sample
+        sample_power = (
+            sample
+            *
+            sample
+        )
 
         if self.signal_power == 0.0:
-            self.signal_power = sample_power
+
+            self.signal_power = (
+                sample_power
+            )
+
             return
 
         self.signal_power = (
             (1.0 - self.power_alpha)
-            * self.signal_power
+            *
+            self.signal_power
             +
             self.power_alpha
-            * sample_power
+            *
+            sample_power
         )
 
     # =============================================================
-    # BUFFER MANAGEMENT
+    # REQUIRED SAMPLE CHECK
     # =============================================================
 
     def _has_required_samples(self):
-        """
-        Checks whether the input buffer contains all samples
-        required for the current Gardner interpolation points.
-        """
 
         if self.timing_position is None:
             return False
@@ -295,36 +417,67 @@ class GardnerLoop:
             self.timing_position
         )
 
-        midpoint_position = (
-            current_position
-            - self.samples_per_symbol / 2.0
-        )
+        # First symbol:
+        #
+        # Only current interpolation point is required.
+        if self.previous_timing_position is None:
 
-        minimum_position = min(
-            current_position,
-            midpoint_position,
-        )
+            minimum_position = (
+                current_position
+            )
 
-        maximum_position = max(
-            current_position,
-            midpoint_position,
-        )
+            maximum_position = (
+                current_position
+            )
+
+        else:
+
+            # Gardner midpoint is halfway between the actual
+            # previous and current timing positions.
+            midpoint_position = (
+                0.5
+                *
+                (
+                    self.previous_timing_position
+                    +
+                    current_position
+                )
+            )
+
+            minimum_position = min(
+                self.previous_timing_position,
+                midpoint_position,
+                current_position,
+            )
+
+            maximum_position = max(
+                self.previous_timing_position,
+                midpoint_position,
+                current_position,
+            )
 
         minimum_index = int(
-            np.floor(minimum_position)
+            np.floor(
+                minimum_position
+            )
         )
 
         maximum_index = (
             int(
-                np.floor(maximum_position)
+                np.floor(
+                    maximum_position
+                )
             )
-            + 1
+            +
+            1
         )
 
         buffer_end_index = (
             self.buffer_start_index
-            + len(self.buffer)
-            - 1
+            +
+            len(self.buffer)
+            -
+            1
         )
 
         return (
@@ -335,21 +488,29 @@ class GardnerLoop:
             <= buffer_end_index
         )
 
+    # =============================================================
+    # BUFFER TRIMMING
+    # =============================================================
+
     def _trim_buffer(self):
-        """
-        Removes samples that can no longer be required by
-        the timing loop.
-        """
 
         if self.timing_position is None:
             return
 
-        # We need to retain enough history for the previous
-        # symbol / timing interval.
-        keep_from_position = (
-            self.timing_position
-            - self.samples_per_symbol
-        )
+        # We must retain the previous timing position because
+        # the next Gardner calculation needs it.
+        if self.previous_timing_position is not None:
+
+            keep_from_position = min(
+                self.previous_timing_position,
+                self.timing_position,
+            )
+
+        else:
+
+            keep_from_position = (
+                self.timing_position
+            )
 
         keep_from_index = int(
             np.floor(
@@ -359,7 +520,8 @@ class GardnerLoop:
 
         remove_count = (
             keep_from_index
-            - self.buffer_start_index
+            -
+            self.buffer_start_index
         )
 
         if remove_count <= 0:
@@ -383,7 +545,8 @@ class GardnerLoop:
 
             excess = (
                 len(self.buffer)
-                - self.buffer_size
+                -
+                self.buffer_size
             )
 
             del self.buffer[
@@ -395,34 +558,43 @@ class GardnerLoop:
             )
 
     # =============================================================
-    # FRACTIONAL INTERPOLATION
+    # FRACTIONAL INTERPOLATOR
     # =============================================================
 
-    def _interpolate(self, position):
+    def _interpolate(
+        self,
+        position,
+    ):
         """
-        Linearly interpolates the streaming signal at a
-        fractional input-sample position.
+        Linear fractional interpolation.
         """
 
         lower_index = int(
-            np.floor(position)
+            np.floor(
+                position
+            )
         )
 
         fraction = (
             position
-            - lower_index
+            -
+            lower_index
         )
 
         lower_buffer_index = (
             lower_index
-            - self.buffer_start_index
+            -
+            self.buffer_start_index
         )
 
         upper_buffer_index = (
             lower_buffer_index
-            + 1
+            +
+            1
         )
 
+        # These should be guaranteed by
+        # _has_required_samples().
         x0 = self.buffer[
             lower_buffer_index
         ]
@@ -432,8 +604,13 @@ class GardnerLoop:
         ]
 
         return (
-            (1.0 - fraction) * x0
-            + fraction * x1
+            (1.0 - fraction)
+            *
+            x0
+            +
+            fraction
+            *
+            x1
         )
 
     # =============================================================
@@ -442,7 +619,7 @@ class GardnerLoop:
 
     def _get_gardner_samples(self):
         """
-        Obtains:
+        Returns:
 
             previous symbol
             midpoint sample
@@ -453,13 +630,40 @@ class GardnerLoop:
             self.timing_position
         )
 
-        midpoint_position = (
-            current_position
-            - self.samples_per_symbol / 2.0
-        )
-
+        # Current recovered symbol.
         current_symbol = (
             self._interpolate(
+                current_position
+            )
+        )
+
+        # No previous symbol/timing position yet.
+        if (
+            self.previous_timing_position
+            is None
+        ):
+
+            return (
+                self.previous_symbol,
+                None,
+                current_symbol,
+            )
+
+        # ---------------------------------------------------------
+        # Gardner midpoint
+        # ---------------------------------------------------------
+        #
+        # The midpoint is NOT assumed to be exactly
+        # nominal_sps / 2 away.
+        #
+        # It is calculated from the actual timing positions.
+        #
+        midpoint_position = (
+            0.5
+            *
+            (
+                self.previous_timing_position
+                +
                 current_position
             )
         )
@@ -470,18 +674,14 @@ class GardnerLoop:
             )
         )
 
-        previous_symbol = (
-            self.previous_symbol
-        )
-
         return (
-            previous_symbol,
+            self.previous_symbol,
             midpoint_sample,
             current_symbol,
         )
 
     # =============================================================
-    # GARDNER TIMING ERROR DETECTOR
+    # GARDNER TED
     # =============================================================
 
     def _calculate_timing_error(
@@ -491,14 +691,16 @@ class GardnerLoop:
         current_symbol,
     ):
         """
-        Calculates the Gardner timing error.
+        Gardner timing-error detector.
 
         For real BPSK:
 
             e[k] =
-                x[k - 1/2]
+                x_mid
                 *
-                (x[k - 1] - x[k])
+                (x_prev - x_current)
+
+        The error is normalized by received signal power.
         """
 
         if previous_symbol is None:
@@ -506,17 +708,16 @@ class GardnerLoop:
 
         raw_error = (
             midpoint_sample
-            * (
+            *
+            (
                 previous_symbol
-                - current_symbol
+                -
+                current_symbol
             )
         )
 
         # ---------------------------------------------------------
-        # Normalize the TED output by signal power.
-        #
-        # This prevents the loop gain from changing simply because
-        # the received signal amplitude changes.
+        # Normalize TED output
         # ---------------------------------------------------------
 
         power = max(
@@ -524,68 +725,120 @@ class GardnerLoop:
             1e-12,
         )
 
-        normalized_error = (
-            raw_error / power
+        timing_error = (
+            raw_error
+            /
+            power
         )
 
-        return normalized_error
+        return timing_error
 
     # =============================================================
-    # TIMING PI LOOP
+    # TIMING LOOP UPDATE
     # =============================================================
 
-    def _update_timing_rate(
+    def _update_timing_loop(
         self,
         timing_error,
     ):
         """
-        Updates the discrete timing PI loop.
+        Second-order timing loop.
 
-        I[k] = I[k-1] + Ki * e[k]
+        Two paths are maintained:
 
-        correction[k] =
-            Kp * e[k] + I[k]
+            Integral path
+                -> timing-rate correction
 
-        omega[k] =
-            nominal_samples_per_symbol
-            + correction[k]
+            Proportional path
+                -> immediate timing-phase correction
         """
 
-        self.integrator_state += (
+        # =========================================================
+        # 1. INTEGRAL / RATE PATH
+        # =========================================================
+
+        new_integrator = (
+            self.integrator_state
+            +
             self.ki
-            * timing_error
+            *
+            timing_error
         )
 
-        self.timing_correction = (
-            self.kp
-            * timing_error
-            + self.integrator_state
+        candidate_sps = (
+            self.nominal_samples_per_symbol
+            +
+            new_integrator
         )
+
+        # ---------------------------------------------------------
+        # Reasonable timing-rate limits
+        # ---------------------------------------------------------
+
+        minimum_sps = (
+            0.5
+            *
+            self.nominal_samples_per_symbol
+        )
+
+        maximum_sps = (
+            1.5
+            *
+            self.nominal_samples_per_symbol
+        )
+
+        clipped_sps = np.clip(
+            candidate_sps,
+            minimum_sps,
+            maximum_sps,
+        )
+
+        # ---------------------------------------------------------
+        # Anti-windup
+        # ---------------------------------------------------------
+
+        if clipped_sps == candidate_sps:
+
+            self.integrator_state = (
+                new_integrator
+            )
+
+        else:
+
+            self.integrator_state = (
+                clipped_sps
+                -
+                self.nominal_samples_per_symbol
+            )
+
+        # ---------------------------------------------------------
+        # Updated timing rate
+        # ---------------------------------------------------------
 
         self.samples_per_symbol = (
+            clipped_sps
+        )
+
+        self.timing_rate_correction = (
+            self.samples_per_symbol
+            -
             self.nominal_samples_per_symbol
-            + self.timing_correction
         )
 
-        # Prevent the timing-rate estimate from becoming
-        # physically invalid.
-        minimum_samples_per_symbol = (
-            0.5
-            * self.nominal_samples_per_symbol
-        )
+        # =========================================================
+        # 2. PROPORTIONAL / PHASE PATH
+        # =========================================================
 
-        maximum_samples_per_symbol = (
-            1.5
-            * self.nominal_samples_per_symbol
+        # Immediate correction to the timing trajectory.
+        #
+        # This is what allows Gardner to move the sampling phase
+        # to the correct point when the received waveform has an
+        # unknown fixed delay.
+        self.phase_correction = (
+            self.kp
+            *
+            timing_error
         )
-
-        self.samples_per_symbol = np.clip(
-            self.samples_per_symbol,
-            minimum_samples_per_symbol,
-            maximum_samples_per_symbol,
-        )
-
-        return self.samples_per_symbol
 
     # =============================================================
     # TIMING NCO
@@ -593,86 +846,100 @@ class GardnerLoop:
 
     def _advance_timing(self):
         """
-        Advances the next recovered-symbol timing position.
+        Advance the receiver's timing trajectory.
 
-            tau[k+1] =
-                tau[k] + omega[k]
+        Current timing position:
+
+            t[k]
+
+        Next timing position:
+
+            t[k+1] =
+                t[k]
+                + timing_rate
+                + phase_correction
+
+        The timing position itself is the accumulated timing
+        phase state.
         """
 
+        # Preserve current timing location.
+        self.previous_timing_position = (
+            self.timing_position
+        )
+
+        # Advance timing trajectory.
         self.timing_position += (
             self.samples_per_symbol
+            +
+            self.phase_correction
         )
 
     # =============================================================
-    # SYMBOL STATE
+    # PREVIOUS SYMBOL
     # =============================================================
 
     def _save_previous_symbol(
         self,
         current_symbol,
     ):
-        """
-        Saves the current recovered symbol for the next
-        Gardner timing-error calculation.
-        """
 
         self.previous_symbol = (
             current_symbol
         )
 
     # =============================================================
-    # PUBLIC STREAMING API
+    # MAIN STREAMING PROCESSOR
     # =============================================================
 
-    def process(self, sample):
+    def process(
+        self,
+        sample,
+    ):
         """
-        Processes exactly one RRC matched-filter output sample.
-
-        Parameters
-        ----------
-        sample : float
-            One oversampled RRC matched-baseband sample.
+        Process one RRC matched-filter output sample.
 
         Returns
         -------
         float or None
-            Recovered symbol sample when a symbol is available.
 
-            None when more input samples are required.
+            Recovered symbol when timing loop produces one.
+
         """
 
-        # ---------------------------------------------------------
-        # 1. Add incoming sample.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 1. Add input sample
+        # =========================================================
 
         self._append_sample(
             sample
         )
 
-        # ---------------------------------------------------------
-        # 2. Update signal-power estimate.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 2. Update signal power
+        # =========================================================
 
         self._update_signal_power(
             float(sample)
         )
 
-        # ---------------------------------------------------------
-        # 3. Initialize timing.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 3. Initialize timing
+        # =========================================================
 
         self._initialize_timing()
 
-        # ---------------------------------------------------------
-        # 4. Check whether enough samples are available.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 4. Check interpolation availability
+        # =========================================================
 
         if not self._has_required_samples():
+
             return None
 
-        # ---------------------------------------------------------
-        # 5. Obtain Gardner samples.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 5. Extract Gardner samples
+        # =========================================================
 
         (
             previous_symbol,
@@ -680,9 +947,9 @@ class GardnerLoop:
             current_symbol,
         ) = self._get_gardner_samples()
 
-        # ---------------------------------------------------------
-        # 6. Calculate Gardner timing error.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 6. Calculate timing error
+        # =========================================================
 
         timing_error = (
             self._calculate_timing_error(
@@ -692,14 +959,13 @@ class GardnerLoop:
             )
         )
 
-        # ---------------------------------------------------------
-        # 7. First recovered symbol.
-        #
-        # There is no Gardner error yet because there is no
-        # previous recovered symbol.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 7. First recovered symbol
+        # =========================================================
 
         if timing_error is None:
+
+            self.timing_error = 0.0
 
             self._save_previous_symbol(
                 current_symbol
@@ -711,45 +977,45 @@ class GardnerLoop:
 
             return current_symbol
 
-        # ---------------------------------------------------------
-        # 8. Store timing error for diagnostics.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 8. Save timing error
+        # =========================================================
 
         self.timing_error = (
             timing_error
         )
 
-        # ---------------------------------------------------------
-        # 9. Update timing PI loop.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 9. Update timing loop
+        # =========================================================
 
-        self._update_timing_rate(
+        self._update_timing_loop(
             timing_error
         )
 
-        # ---------------------------------------------------------
-        # 10. Save current symbol.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 10. Save current symbol
+        # =========================================================
 
         self._save_previous_symbol(
             current_symbol
         )
 
-        # ---------------------------------------------------------
-        # 11. Advance timing NCO.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 11. Advance timing NCO
+        # =========================================================
 
         self._advance_timing()
 
-        # ---------------------------------------------------------
-        # 12. Remove old samples.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 12. Remove samples no longer required
+        # =========================================================
 
         self._trim_buffer()
 
-        # ---------------------------------------------------------
-        # 13. Return recovered symbol.
-        # ---------------------------------------------------------
+        # =========================================================
+        # 13. Return recovered symbol
+        # =========================================================
 
         return current_symbol
 
@@ -758,50 +1024,41 @@ class GardnerLoop:
     # =============================================================
 
     def get_timing_error(self):
-        """
-        Returns the latest normalized Gardner timing error.
-        """
 
         return self.timing_error
 
     def get_timing_position(self):
-        """
-        Returns the current timing position in input samples.
-        """
 
         return self.timing_position
 
     def get_samples_per_symbol(self):
-        """
-        Returns the current timing-rate estimate.
-        """
 
         return self.samples_per_symbol
 
     def get_nominal_samples_per_symbol(self):
-        """
-        Returns the nominal input samples per symbol.
-        """
 
         return self.nominal_samples_per_symbol
 
+    def get_timing_phase_correction(self):
+
+        return self.phase_correction
+
+    def get_timing_rate_correction(self):
+
+        return self.timing_rate_correction
+
     def get_loop_bandwidth(self):
-        """
-        Returns the timing-loop bandwidth in Hz.
-        """
 
         return self.loop_bandwidth
 
     def get_kp(self):
-        """
-        Returns the calculated proportional gain.
-        """
 
         return self.kp
 
     def get_ki(self):
-        """
-        Returns the calculated integral gain.
-        """
 
         return self.ki
+
+    def get_ted_gain(self):
+
+        return self.ted_gain
