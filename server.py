@@ -33,6 +33,46 @@ def safe_call(obj, *names, default=0.0):
     return default
 
 
+def amplitude_spectrum(samples, dt, f_max=3.0e9, zero_pad=4):
+    """Single-sided amplitude spectrum of the newest `len(samples)` samples.
+
+    Hann window (low leakage) with coherent-gain correction so a sine of
+    amplitude A reads A, and zero-padding (x4) so an off-bin tone is not
+    read low by scalloping. Returns (amplitudes <= f_max, bin spacing in Hz,
+    true frequency resolution 1/(n*dt) in Hz).
+    """
+    x = np.asarray(samples, dtype=np.float64)
+    n = len(x)
+    if n < 8:
+        return [], 0.0, 0.0
+    w = np.hanning(n)
+    gain = w.sum() / n
+    n_fft = n * int(zero_pad)
+    spec = np.fft.rfft(x * w, n=n_fft)
+    freqs = np.fft.rfftfreq(n_fft, d=dt)
+    amps = 2.0 * np.abs(spec) / n / gain
+    amps[0] /= 2.0                      # DC is not doubled
+    keep = freqs <= f_max
+    return amps[keep].tolist(), float(freqs[1]), 1.0 / (n * dt)
+
+
+def clamp_window_ns(value):
+    """FFT / scope window from the UI, kept to a sane range."""
+    return min(500.0, max(2.0, float(value)))
+
+
+def validate_link_params(fc, rb):
+    """Reject carrier / bit-rate combinations the receiver front end cannot
+    be designed for (band-pass low edge = fc - rb must stay positive)."""
+    if fc <= 0 or rb <= 0:
+        raise ValueError("Carrier frequency and bit rate must be positive.")
+    if rb >= fc:
+        raise ValueError(
+            f"Bit rate ({rb / 1e6:.0f} Mbps) must be below the carrier "
+            f"frequency ({fc / 1e9:.2f} GHz)."
+        )
+
+
 class SimulationRuntime:
     def __init__(self):
         self.resolution_x = 1000
@@ -62,7 +102,9 @@ class SimulationRuntime:
         if res_y is not None:
             self.resolution_y = max(100, int(res_y))
         if dt_multiplier is not None:
-            self.dt_multiplier = float(dt_multiplier)
+            # > 1.0 violates the Courant condition and WaveSolver would raise
+            # half-way through a rebuild, leaving the runtime inconsistent.
+            self.dt_multiplier = min(1.0, max(0.01, float(dt_multiplier)))
 
         self.space = SimulationSpace(
             width=self.width,
@@ -90,6 +132,7 @@ class SimulationRuntime:
             self.space, x=float(x), y=float(y),
             carrier_frequency=float(fc), carrier_amplitude=float(amp),
             bit_rate=float(rb), window_duration=float(window_duration),
+            fft_window=float(window_duration),
         )
         self.transmitters[tx_id] = tx
 
@@ -104,6 +147,7 @@ class SimulationRuntime:
         rx = Receiver(
             self.space, x=float(x), y=float(y),
             tuned_frequency=1.0e9, bit_rate=float(bit_rate), observation_window=float(observation_window),
+            fft_window=float(observation_window),
         )
         self.receivers[rx_id] = rx
 
@@ -127,6 +171,34 @@ class SimulationRuntime:
     def remove_observation_point(self, oid):
         if oid in self.observation_points:
             del self.observation_points[oid]
+
+    def reset_links_for(self, tx_id=None, rx_id=None):
+        """Clear BER / sync state of every evaluator that uses the given
+        transmitter or receiver (their bit streams just restarted)."""
+        for data in self.link_evaluators_dict.values():
+            uses_tx = tx_id is not None and data["tx_id"] == tx_id
+            uses_rx = rx_id is not None and data["rx_id"] == rx_id
+            if (uses_tx or uses_rx) and data["evaluator"]:
+                data["evaluator"].reset()
+
+    def load_scenario(self, name):
+        """Rebuild the environment for one of the UI presets."""
+        if name not in ("los", "cochannel", "adjacent", "concrete_wall"):
+            raise ValueError(f"Unknown scenario '{name}'.")
+
+        self.running = False
+        self._build()  # TX0 (2,5) -> RX0 (8,5), 1 GHz, 200 Mbps, one probe
+
+        if name == "cochannel":
+            # Interferer on the same carrier as TX0.
+            self.add_transmitter(1, 2.0, 8.0, fc=1.0e9, rb=200.0e6, amp=2.0)
+        elif name == "adjacent":
+            # Interferer on a neighbouring channel.
+            self.add_transmitter(1, 2.0, 8.0, fc=1.3e9, rb=200.0e6, amp=2.0)
+        elif name == "concrete_wall":
+            self.add_material("concrete", 4.8, 5.2, 2.0, 8.0)
+
+        self.add_link_evaluator(0, 0)
 
     def add_link_evaluator(self, tx_id, rx_id):
         lid = self.next_link_eval_id
@@ -176,7 +248,9 @@ class SimulationRuntime:
                 "evaluator": ev
             }
             
-    def add_material(self, name, x_min=None, x_max=None, y_min=None, y_max=None, angle=0.0, rel_perm=None, rel_mu=None, cond=0.0):
+    def add_material(self, name, x_min=None, x_max=None, y_min=None, y_max=None,
+                     angle=0.0, rel_perm=None, rel_mu=None, cond=None,
+                     refresh=True):
         if x_min is None or x_max is None or y_min is None or y_max is None:
             idx = len(self.materials_list)
             w_box, h_box = 0.4, 4.0
@@ -185,57 +259,54 @@ class SimulationRuntime:
             y_min = 2.0
             y_max = y_min + h_box
 
-        mat_name = name if name in ["concrete", "glass", "wood", "water"] else "concrete"
-
+        # Built-in names use the database values unless overridden;
+        # any other name is a custom material and must carry all three
+        # properties (Material raises a clear error otherwise).
         mat = Material(
-            simulation_space=self.space, name=mat_name,
+            simulation_space=self.space,
+            name=name or "concrete",
             x_min=float(x_min), x_max=float(x_max),
             y_min=float(y_min), y_max=float(y_max),
+            relative_permittivity=None if rel_perm is None else float(rel_perm),
+            relative_permeability=None if rel_mu is None else float(rel_mu),
+            conductivity=None if cond is None else float(cond),
         )
-        if rel_perm is not None and hasattr(mat, "set_relative_permittivity"):
-            mat.set_relative_permittivity(float(rel_perm))
-        if rel_mu is not None and hasattr(mat, "set_relative_permeability"):
-            mat.set_relative_permeability(float(rel_mu))
-        if cond is not None and hasattr(mat, "set_conductivity"):
-            mat.set_conductivity(float(cond))
         mat.apply()
 
-        if hasattr(self.wave_solver, "refresh"):
+        if refresh and hasattr(self.wave_solver, "refresh"):
             self.wave_solver.refresh()
 
-        mat_id = len(self.materials_list)
+        # Report what the solver is actually using, not what was requested.
         self.materials_list.append({
-            "id": mat_id,
-            "name": name, 
-            "x_min": float(x_min), "x_max": float(x_max),
-            "y_min": float(y_min), "y_max": float(y_max), 
+            "id": len(self.materials_list),
+            "name": mat.get_name(),
+            "x_min": mat.x_min, "x_max": mat.x_max,
+            "y_min": mat.y_min, "y_max": mat.y_max,
             "angle": float(angle),
-            "relative_permittivity": float(rel_perm) if rel_perm is not None else 15.0,
-            "relative_permeability": float(rel_mu) if rel_mu is not None else 1.0,
-            "conductivity": float(cond) if cond is not None else 0.0
+            "relative_permittivity": mat.get_relative_permittivity(),
+            "relative_permeability": mat.get_relative_permeability(),
+            "conductivity": mat.get_conductivity(),
         })
 
     def remove_material(self, mat_id):
-        self.materials_list = [
+        remaining = [
             m for m in self.materials_list
             if m.get("id") != mat_id
         ]
-        old_mats = list(self.materials_list)
 
         self.space.reset_materials()
         self.materials_list.clear()
 
-        for m in old_mats:
+        for m in remaining:
             self.add_material(
                 name=m["name"],
-                x_min=m["x_min"],
-                x_max=m["x_max"],
-                y_min=m["y_min"],
-                y_max=m["y_max"],
+                x_min=m["x_min"], x_max=m["x_max"],
+                y_min=m["y_min"], y_max=m["y_max"],
                 angle=m["angle"],
                 rel_perm=m["relative_permittivity"],
                 rel_mu=m["relative_permeability"],
-                cond=m["conductivity"]
+                cond=m["conductivity"],
+                refresh=False,   # one refresh at the end, not one per material
             )
 
         if hasattr(self.wave_solver, "refresh"):
@@ -277,13 +348,15 @@ class SimulationRuntime:
     def status(self):
         tx_list = []
         for tid, tx in self.transmitters.items():
-            freqs, amps = tx.compute_bpsk_fft()
-            fft_spec = amps[freqs <= 3.0e9].tolist() if len(amps) > 0 else []
+            fft_spec, tx_df, tx_res = amplitude_spectrum(tx.get_bpsk_fft_values(), self.space.dt)
             tx_list.append({
                 "id": tid, "x": float(tx.x), "y": float(tx.y),
-                "fc": safe_call(tx, "carrier_frequency", "fc", default=1.0e9),
-                "rb": safe_call(tx, "bit_rate", "rb", default=500.0e6),
-                "amp": safe_call(tx, "carrier_amplitude", "amplitude", "amp", default=2.0),
+                "fc": tx.get_carrier_frequency(),
+                "rb": tx.get_bit_rate(),
+                "amp": tx.get_carrier_amplitude(),
+                "window_ns": tx.get_window_duration() * 1e9,
+                "spectrum_df_hz": tx_df,
+                "spectrum_res_hz": tx_res,
                 "symbols": list(tx.get_bit_values()) if hasattr(tx, "get_bit_values") else [],
                 "shaped": list(tx.get_shaped_values()) if hasattr(tx, "get_shaped_values") else [],
                 "carrier": list(tx.get_carrier_values()) if hasattr(tx, "get_carrier_values") else [],
@@ -293,23 +366,15 @@ class SimulationRuntime:
 
         rx_list = []
         for rid, r in self.receivers.items():
-            rx_fft_spec = []
-            try:
-                raw_vals = np.array(r.get_received_values(), dtype=np.float64)
-                if len(raw_vals) >= 8:
-                    n = len(raw_vals)
-                    fft_vals = np.fft.rfft(raw_vals)
-                    freqs = np.fft.rfftfreq(n, d=self.space.dt)
-                    amps = 2.0 * np.abs(fft_vals) / n
-                    amps[0] /= 2.0
-                    rx_fft_spec = amps[freqs <= 3.0e9].tolist()
-            except Exception:
-                rx_fft_spec = []
+            rx_fft_spec, rx_df, rx_res = amplitude_spectrum(r.get_received_values(), self.space.dt)
 
             rx_list.append({
                 "id": rid, "x": float(r.x), "y": float(r.y),
-                "fc": safe_call(r, "tuned_frequency", "fc", default=1.0e9),
-                "rb": safe_call(r, "bit_rate", "rb", default=500.0e6),
+                "fc": r.get_tuned_frequency(),
+                "rb": r.get_bit_rate(),
+                "window_ns": r.get_observation_window() * 1e9,
+                "spectrum_df_hz": rx_df,
+                "spectrum_res_hz": rx_res,
                 "rx_raw": list(r.get_received_values()),
                 "rx_bpf": list(r.get_filtered_values()),
                 "rx_mixed": list(r.get_mixed_values()),
@@ -320,9 +385,13 @@ class SimulationRuntime:
 
         obs_list = []
         for oid, op in self.observation_points.items():
+            obs_df = 0.0
+            n_obs = len(op.signal_history)
+            obs_res = 1.0 / (n_obs * self.space.dt) if n_obs else 0.0
             try:
-                freqs, amps = op.compute_fft(window_type="hann")
+                freqs, amps = op.compute_fft(window_type="hann", zero_padding_factor=4)
                 fft_data = amps[freqs <= 3.0e9].tolist() if len(amps) > 0 else []
+                obs_df = float(freqs[1] - freqs[0]) if len(freqs) > 1 else 0.0
                 peak_f, peak_a = op.get_peak_frequency(window_type="hann")
             except Exception:
                 fft_data = []
@@ -334,7 +403,10 @@ class SimulationRuntime:
                 "waveform": list(op.signal_history),
                 "spectrum": fft_data,
                 "peak_freq_ghz": float(peak_f / 1e9),
-                "peak_mag": float(peak_a)
+                "peak_mag": float(peak_a),
+                "spectrum_df_hz": obs_df,
+                "spectrum_res_hz": obs_res,
+                "window_ns": op.buffer_duration * 1e9
             })
 
         links_list = []
@@ -350,6 +422,8 @@ class SimulationRuntime:
                 "delay_ns": float(delay_val),
                 "bits_compared": ev.get_total_bits_compared() if ev else 0,
                 "bit_errors": ev.get_bit_errors() if ev else 0,
+                "synced": bool(ev.sync_found) if ev else False,
+                "inverted": bool(ev.inverted) if ev else False,
             })
 
         return {
@@ -370,6 +444,8 @@ class SimulationRuntime:
             "observation_points": obs_list,
             "link_evaluators": links_list,
             "materials": self.materials_list,
+            "view_mode": self.view_mode,
+            "noise_level": self.wave_solver.get_noise_level(),
         }
 
 
@@ -386,8 +462,13 @@ async def index():
     return FileResponse("index.html")
 
 def handle_control_message(message: dict):
+    """Apply one UI message to the runtime.
+
+    Returns an error string when the request was rejected (the WebSocket
+    loop forwards it to the browser), otherwise None.
+    """
+    msg_type = message.get("type")
     try:
-        msg_type = message.get("type")
         if msg_type in ("start", "resume"):
             runtime.running = True
         elif msg_type == "pause":
@@ -401,74 +482,99 @@ def handle_control_message(message: dict):
             dt_mult = float(message.get("dt_multiplier", runtime.dt_multiplier))
             runtime.running = False
             runtime._build(res_x=w, res_y=h, dt_multiplier=dt_mult)
+        elif msg_type == "load_scenario":
+            runtime.load_scenario(message.get("name", "los"))
         elif msg_type == "set_view_mode":
             runtime.view_mode = message.get("mode", "field")
+        elif msg_type == "set_noise":
+            runtime.wave_solver.set_noise_level(max(0.0, float(message.get("level", 0.0))))
+
+        # ---------------- transmitters ----------------
         elif msg_type == "add_transmitter":
             new_id = max(runtime.transmitters.keys()) + 1 if runtime.transmitters else 0
             runtime.add_transmitter(new_id, float(message.get("x", 2.0)), float(message.get("y", 7.0)))
         elif msg_type == "remove_transmitter":
             runtime.remove_transmitter(int(message.get("tx_id", 0)))
-        
         elif msg_type == "set_transmitter_params":
             tx_id = int(message.get("tx_id", 0))
+            tx = runtime.transmitters.get(tx_id)
+            if tx is not None:
+                new_fc = float(message["fc"]) if "fc" in message else tx.get_carrier_frequency()
+                new_rb = float(message["rb"]) if "rb" in message else tx.get_bit_rate()
+                validate_link_params(new_fc, new_rb)
 
-            if tx_id in runtime.transmitters:
-                tx = runtime.transmitters[tx_id]
+                if new_fc != tx.get_carrier_frequency():
+                    tx.set_carrier_frequency(new_fc)
 
-                if "fc" in message:
-                    tx.set_carrier_frequency(
-                        float(message["fc"])
-                    )
+                # set_bit_rate restarts the bit stream (and preamble), so only
+                # call it when the rate really changed - not on every slider tick.
+                if new_rb != tx.get_bit_rate():
+                    tx.set_bit_rate(new_rb)
+                    runtime.reset_links_for(tx_id=tx_id)
 
-                if "rb" in message:
-                    tx.set_bit_rate(
-                        float(message["rb"])
-                    )
-
-                amp_val = message.get(
-                    "amp",
-                    message.get(
-                        "amplitude",
-                        message.get("carrier_amplitude")
-                    )
-                )
-
+                amp_val = message.get("amp", message.get("amplitude", message.get("carrier_amplitude")))
                 if amp_val is not None:
-                    tx.set_carrier_amplitude(
-                        float(amp_val)
-                    )
+                    tx.set_carrier_amplitude(float(amp_val))
 
-                print(
-                    f"[BACKEND] Updated Transmitter {tx_id} -> "
-                    f"Freq: {tx.get_carrier_frequency()} Hz, "
-                    f"Amp: {tx.get_carrier_amplitude()} V, "
-                    f"BitRate: {tx.bit_rate} bps"
-                )
+                if "window_ns" in message:
+                    win = clamp_window_ns(message["window_ns"]) * 1e-9
+                    tx.set_window_duration(win)     # time-domain traces
+                    tx.set_fft_window(win)          # FFT input buffer
 
+        # ---------------- receivers ----------------
         elif msg_type == "add_receiver":
             new_id = max(runtime.receivers.keys()) + 1 if runtime.receivers else 0
             runtime.add_receiver(new_id, float(message.get("x", 8.0)), float(message.get("y", 5.0)))
         elif msg_type == "remove_receiver":
             runtime.remove_receiver(int(message.get("rx_id", 0)))
-
         elif msg_type == "set_receiver_params":
             rx_id = int(message.get("rx_id", 0))
-            if rx_id in runtime.receivers:
-                rx = runtime.receivers[rx_id]
-                if "fc" in message:
-                    val = float(message["fc"])
-                    if hasattr(rx, "tuned_frequency"): rx.tuned_frequency = val
-                    if hasattr(rx, "fc"): rx.fc = val
-                if "rb" in message:
-                    val = float(message["rb"])
-                    if hasattr(rx, "bit_rate"): rx.bit_rate = val
-                    if hasattr(rx, "rb"): rx.rb = val
-                print(f"[BACKEND] Updated Receiver {rx_id} -> Tuned Freq: {safe_call(rx, 'tuned_frequency', 'fc')} Hz, BitRate: {safe_call(rx, 'bit_rate', 'rb')} bps")
+            rx = runtime.receivers.get(rx_id)
+            if rx is not None:
+                new_fc = float(message["fc"]) if "fc" in message else rx.get_tuned_frequency()
+                new_rb = float(message["rb"]) if "rb" in message else rx.get_bit_rate()
+                validate_link_params(new_fc, new_rb)
 
+                # Use the real setters: they redesign the band-pass filter,
+                # matched filter, Costas loop and Gardner loop. Assigning the
+                # attributes directly left all of those on the old design.
+                # Apply in an order that keeps (fc - rb) > 0 at every step.
+                if new_fc >= rx.get_tuned_frequency():
+                    steps = [("fc", new_fc), ("rb", new_rb)]
+                else:
+                    steps = [("rb", new_rb), ("fc", new_fc)]
+
+                changed = False
+                for key, val in steps:
+                    if key == "fc" and val != rx.get_tuned_frequency():
+                        rx.set_tuned_frequency(val)
+                        changed = True
+                    elif key == "rb" and val != rx.get_bit_rate():
+                        rx.set_bit_rate(val)
+                        changed = True
+
+                if changed:
+                    rx.demodulated_bits.clear()
+                    rx.demodulated_bit_times.clear()
+                    runtime.reset_links_for(rx_id=rx_id)
+
+                if "window_ns" in message:
+                    win = clamp_window_ns(message["window_ns"]) * 1e-9
+                    rx.set_observation_window(win)  # time-domain traces + FFT input
+                    rx.set_fft_window(win)
+
+        # ---------------- observation points ----------------
         elif msg_type == "add_observation_point":
             runtime.add_observation_point(float(message.get("x", 5.0)), float(message.get("y", 5.0)), label=message.get("label", "Probe"))
         elif msg_type == "remove_observation_point":
             runtime.remove_observation_point(int(message.get("oid", 0)))
+        elif msg_type == "set_obs_window":
+            oid = int(message.get("oid", 0))
+            op = runtime.observation_points.get(oid)
+            if op is not None:
+                op.set_fft_window(clamp_window_ns(message.get("window_ns", 15.0)) * 1e-9)
+
+        # ---------------- link evaluators ----------------
         elif msg_type == "add_link_evaluator":
             tx_keys = list(runtime.transmitters.keys())
             rx_keys = list(runtime.receivers.keys())
@@ -479,6 +585,8 @@ def handle_control_message(message: dict):
             runtime.remove_link_evaluator(int(message.get("lid", 0)))
         elif msg_type == "update_link_evaluator":
             runtime.update_link_evaluator_pairing(int(message.get("lid", 0)), int(message.get("tx_id", 0)), int(message.get("rx_id", 0)))
+
+        # ---------------- dragging ----------------
         elif msg_type == "move_tx":
             tx_id = int(message.get("tx_id", 0))
             if tx_id in runtime.transmitters:
@@ -491,31 +599,29 @@ def handle_control_message(message: dict):
             oid = int(message.get("oid", 0))
             if oid in runtime.observation_points:
                 runtime.observation_points[oid].set_position(float(message["x"]), float(message["y"]))
-        elif msg_type == "set_obs_window":
-            oid = int(message.get("oid", 0))
-            win_ns = float(message.get("window_ns", 15.0))
-            if oid in runtime.observation_points:
-                op = runtime.observation_points[oid]
-                if hasattr(op, "set_buffer_duration"):
-                    op.set_buffer_duration(win_ns * 1e-9)
+
+        # ---------------- materials ----------------
         elif msg_type == "add_material":
             runtime.add_material(
                 name=message.get("name", "concrete"),
-                x_min=message.get("x_min"), 
+                x_min=message.get("x_min"),
                 x_max=message.get("x_max"),
-                y_min=message.get("y_min"), 
+                y_min=message.get("y_min"),
                 y_max=message.get("y_max"),
                 angle=float(message.get("angle", 0.0)),
                 rel_perm=message.get("relative_permittivity"),
                 rel_mu=message.get("relative_permeability"),
-                cond=message.get("conductivity", 0.0),
+                cond=message.get("conductivity"),
             )
         elif msg_type == "remove_material":
             runtime.remove_material(int(message.get("mat_id", 0)))
         elif msg_type in ("clear_walls", "clear_materials"):
             runtime.clear_materials()
+
     except Exception as e:
         print(f"Error handling control message {message}: {e}")
+        return f"{msg_type}: {e}"
+    return None
 
 
 @app.websocket("/ws/sim")
@@ -526,11 +632,15 @@ async def ws_sim(websocket: WebSocket):
     except Exception:
         return
 
+    pending_errors = []
+
     async def receive_loop():
         try:
             while True:
                 msg = await websocket.receive_json()
-                handle_control_message(msg)
+                error = handle_control_message(msg)
+                if error:
+                    pending_errors.append(error)
         except (WebSocketDisconnect, Exception):
             pass
 
@@ -547,6 +657,8 @@ async def ws_sim(websocket: WebSocket):
             try:
                 await websocket.send_bytes(runtime.field_bytes())
                 await websocket.send_json(runtime.status())
+                while pending_errors:
+                    await websocket.send_json({"type": "error", "message": pending_errors.pop(0)})
             except Exception:
                 break
 

@@ -106,6 +106,11 @@ class Transmitter:
         self.last_bit_index = -1
         self._last_symbol_index = -1
 
+        # Sample index at which this bit stream started. Symbol indices are
+        # counted from here, so the known sync sequence is always sent first,
+        # even if the transmitter is created (or restarted) mid-simulation.
+        self._start_sample = None
+
         # Append-only ground-truth log for LinkEvaluator
         self.generated_bits = []
 
@@ -140,13 +145,7 @@ class Transmitter:
         if self.bit_rate <= 0:
             raise ValueError("Bit rate must be greater than zero.")
 
-        current_sample = int(
-            round(current_time / self.simulation_space.dt)
-        )
-
-        current_bit_index = (
-            current_sample // self._samples_per_symbol
-        )
+        current_bit_index = self._symbol_index(current_time)
 
         if (
             current_bit_index != self.last_bit_index
@@ -171,11 +170,22 @@ class Transmitter:
 
         return self.current_bit
 
-    def _get_symbol_impulse(self, current_time):
+    def _symbol_index(self, current_time):
+        """Symbol index counted from the start of this bit stream."""
         current_sample = int(
             round(current_time / self.simulation_space.dt)
         )
-        current_symbol_index = current_sample // self._samples_per_symbol
+
+        if self._start_sample is None:
+            self._start_sample = current_sample
+
+        return (
+            (current_sample - self._start_sample)
+            // self._samples_per_symbol
+        )
+
+    def _get_symbol_impulse(self, current_time):
+        current_symbol_index = self._symbol_index(current_time)
 
         if current_symbol_index != self._last_symbol_index:
             self._last_symbol_index = current_symbol_index
@@ -262,6 +272,7 @@ class Transmitter:
         self.current_bit = None
         self.last_bit_index = -1
         self._last_symbol_index = -1
+        self._start_sample = None
         self.generated_bits.clear()
         self._pulse_filter.reset()
 

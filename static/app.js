@@ -22,6 +22,7 @@ let fieldRenderCtx = fieldRenderCanvas.getContext("2d");
 let isMouseDownOnCanvas = false;
 let startMousePos = { x: 0, y: 0 };
 let draggedNode = null;
+let dragMoved = false;
 let activeModalZIndex = 1000;
 
 let isDrawingBox = false;
@@ -47,9 +48,27 @@ function safeSend(payload) {
   }
 }
 
+function showToast(message) {
+  let el = document.getElementById("simToast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "simToast";
+    el.style.cssText = "position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#7f1d1d; color:#fee2e2; border:1px solid #ef4444; border-radius:6px; padding:8px 14px; font-size:12px; z-index:20000; max-width:70vw;";
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.style.display = "block";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.display = "none"; }, 4000);
+}
+
 ws.onmessage = (event) => {
   if (typeof event.data === "string") {
     const data = JSON.parse(event.data);
+    if (data.type === "error") {      // rejected request: don't treat as telemetry
+      showToast(data.message);
+      return;
+    }
     latestTelemetry = data;
 
   if (data.grid_width && data.grid_height) {
@@ -89,8 +108,17 @@ ws.onmessage = (event) => {
     if (bytes.length !== imgData.data.length / 4) return;
 
     let p = 0;
+    const energyMode = latestTelemetry?.view_mode === "energy";
     for (let i = 0; i < bytes.length; i++) {
       const v = bytes[i];
+      if (energyMode) {
+        imgData.data[p] = 255;
+        imgData.data[p + 1] = 255 - v;
+        imgData.data[p + 2] = 255 - v;
+        imgData.data[p + 3] = 255;
+        p += 4;
+        continue;
+      }
       const diff = v - 128;
       if (diff >= 0) {
         imgData.data[p] = 255;
@@ -278,6 +306,76 @@ function drawNodeMarkers() {
   emCtx.restore();
 }
 
+// ---- link evaluator cards -------------------------------------------------
+// Telemetry arrives up to 60x/s. Cards are built ONCE per evaluator and then
+// updated in place; rebuilding them every frame replaced the Del button
+// between mousedown and mouseup, so clicks were lost.
+const linkCards = new Map();   // evaluator id -> { card, txSel, rxSel, fields, optionsKey }
+
+function makeEl(tag, cssText, text) {
+  const node = document.createElement(tag);
+  if (cssText) node.style.cssText = cssText;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function createLinkCard(link) {
+  const card = makeEl("div", "background:#161d2d; border:1.5px solid #f59e0b; border-radius:6px; padding:8px; display:flex; flex-direction:column; gap:6px; margin-bottom:6px;");
+  card.className = "node-card";
+
+  const head = makeEl("div", "display:flex; justify-content:space-between; align-items:center; width:100%;");
+  head.appendChild(makeEl("span", "color:#f59e0b; font-size:11.5px; font-weight:700;", `Link Evaluator #${link.id}`));
+  const delBtn = makeEl("button", "padding:2px 8px; font-size:9.5px; cursor:pointer;", "Del");
+  delBtn.className = "danger";
+  delBtn.addEventListener("click", () => safeSend({ type: "remove_link_evaluator", lid: link.id }));
+  head.appendChild(delBtn);
+  card.appendChild(head);
+
+  const pair = makeEl("div", "display:flex; gap:6px; font-size:10.5px; align-items:center;");
+  const txLabel = makeEl("label", "flex:1; margin:0;", "TX: ");
+  const rxLabel = makeEl("label", "flex:1; margin:0;", "RX: ");
+  const txSel = makeEl("select", "width:100%; margin-top:2px;");
+  const rxSel = makeEl("select", "width:100%; margin-top:2px;");
+  txSel.className = "preset-select link-tx";
+  rxSel.className = "preset-select link-rx";
+  txSel.addEventListener("change", () => updateLinkPair(link.id, txSel.value, rxSel.value));
+  rxSel.addEventListener("change", () => updateLinkPair(link.id, txSel.value, rxSel.value));
+  txLabel.appendChild(txSel);
+  rxLabel.appendChild(rxSel);
+  pair.appendChild(txLabel);
+  pair.appendChild(rxLabel);
+  card.appendChild(pair);
+
+  const grid = makeEl("div", "background:#090d15; border-radius:4px; padding:6px; display:grid; grid-template-columns: 1fr 1fr; gap:4px; font-size:10px; margin-top:4px;");
+  const fields = {};
+  [
+    ["time", "Sim Time: ", "#38bdf8"],
+    ["bits", "Bits: ", "#38bdf8"],
+    ["errors", "Errors: ", "#ef4444"],
+    ["ber", "BER: ", "#f8fafc"],
+    ["delay", "Delay: ", "#10b981"],
+    ["sync", "Sync: ", "#f59e0b"],
+  ].forEach(([key, label, color]) => {
+    const cell = makeEl("div", "", label);
+    fields[key] = makeEl("span", `color:${color}; font-weight:bold;`, "");
+    cell.appendChild(fields[key]);
+    grid.appendChild(cell);
+  });
+  card.appendChild(grid);
+
+  return { card, txSel, rxSel, fields, optionsKey: null };
+}
+
+function fillSelect(sel, prefix, ids) {
+  sel.textContent = "";
+  ids.forEach((id) => {
+    const opt = document.createElement("option");
+    opt.value = String(id);
+    opt.textContent = `${prefix} ${id}`;
+    sel.appendChild(opt);
+  });
+}
+
 function renderLinkEvaluators(data) {
   const container = document.getElementById("linkEvaluatorsContainer");
   const block = document.getElementById("linkEvaluatorsBlock");
@@ -285,53 +383,57 @@ function renderLinkEvaluators(data) {
   if (!container || !block) return;
 
   if (telemetryBlock) telemetryBlock.style.display = "none";
-  if (document.activeElement && (document.activeElement.classList.contains("link-tx") || document.activeElement.classList.contains("link-rx"))) {
-    return;
-  }
 
-  if (!data.link_evaluators || data.link_evaluators.length === 0) {
+  const links = data.link_evaluators || [];
+  if (links.length === 0) {
     block.style.display = "none";
-    container.innerHTML = "";
+    container.textContent = "";
+    linkCards.clear();
     return;
   }
-
   block.style.display = "flex";
-  container.innerHTML = "";
 
-  data.link_evaluators.forEach((link) => {
-    let txOpts = "", rxOpts = "";
-    data.transmitters?.forEach(t => {
-      txOpts += `<option value="${t.id}" ${t.id === link.tx_id ? 'selected' : ''}>TX ${t.id}</option>`;
-    });
-    data.receivers?.forEach(r => {
-      rxOpts += `<option value="${r.id}" ${r.id === link.rx_id ? 'selected' : ''}>RX ${r.id}</option>`;
-    });
+  // Drop cards whose evaluator no longer exists (deleted / scenario reset).
+  for (const [lid, entry] of Array.from(linkCards.entries())) {
+    if (!links.some((l) => l.id === lid)) {
+      entry.card.remove();
+      linkCards.delete(lid);
+    }
+  }
 
-    const card = document.createElement("div");
-    card.className = "node-card";
-    card.style.cssText = "background:#161d2d; border:1.5px solid #f59e0b; border-radius:6px; padding:8px; display:flex; flex-direction:column; gap:6px; margin-bottom:6px;";
-    
-    card.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
-        <span style="color:#f59e0b; font-size:11.5px; font-weight:700;">Link Evaluator #${link.id}</span>
-        <button class="danger" style="padding:2px 8px; font-size:9.5px; cursor:pointer;" onclick="safeSend({type:'remove_link_evaluator', lid:${link.id}})">Del</button>
-      </div>
-      <div style="display:flex; gap:6px; font-size:10.5px; align-items:center;">
-        <label style="flex:1; margin:0;">TX: <select class="preset-select link-tx" data-lid="${link.id}" style="width:100%; margin-top:2px;">${txOpts}</select></label>
-        <label style="flex:1; margin:0;">RX: <select class="preset-select link-rx" data-lid="${link.id}" style="width:100%; margin-top:2px;">${rxOpts}</select></label>
-      </div>
-      <div style="background:#090d15; border-radius:4px; padding:6px; display:grid; grid-template-columns: 1fr 1fr; gap:4px; font-size:10px; margin-top:4px;">
-        <div>Sim Time: <span style="color:#38bdf8; font-weight:bold;">${(data.time_ns || 0).toFixed(1)} ns</span></div>
-        <div>Bits: <span style="color:#38bdf8; font-weight:bold;">${link.bits_compared || 0}</span></div>
-        <div>Errors: <span style="color:#ef4444; font-weight:bold;">${link.bit_errors || 0}</span></div>
-        <div>BER: <span style="color:#f8fafc; font-weight:bold;">${Number(link.ber || 0).toFixed(4)}</span></div>
-        <div style="grid-column: span 2;">Delay: <span style="color:#10b981; font-weight:bold;">${(link.delay_ns || 0).toFixed(1)} ns</span></div>
-      </div>
-    `;
+  const txIds = (data.transmitters || []).map((t) => t.id);
+  const rxIds = (data.receivers || []).map((r) => r.id);
+  const optionsKey = `${txIds.join(",")}|${rxIds.join(",")}`;
 
-    card.querySelector(".link-tx").onchange = (e) => updateLinkPair(link.id, e.target.value, card.querySelector(".link-rx").value);
-    card.querySelector(".link-rx").onchange = (e) => updateLinkPair(link.id, card.querySelector(".link-tx").value, e.target.value);
-    container.appendChild(card);
+  links.forEach((link) => {
+    let entry = linkCards.get(link.id);
+    if (!entry) {
+      entry = createLinkCard(link);
+      linkCards.set(link.id, entry);
+      container.appendChild(entry.card);
+    }
+
+    // Only touch the dropdowns when the TX/RX set changed, and never while
+    // the user is interacting with them.
+    const editing = document.activeElement === entry.txSel || document.activeElement === entry.rxSel;
+    if (entry.optionsKey !== optionsKey && !editing) {
+      fillSelect(entry.txSel, "TX", txIds);
+      fillSelect(entry.rxSel, "RX", rxIds);
+      entry.optionsKey = optionsKey;
+    }
+    if (!editing) {
+      entry.txSel.value = String(link.tx_id);
+      entry.rxSel.value = String(link.rx_id);
+    }
+
+    const f = entry.fields;
+    f.time.textContent = `${(data.time_ns || 0).toFixed(1)} ns`;
+    f.bits.textContent = String(link.bits_compared || 0);
+    f.errors.textContent = String(link.bit_errors || 0);
+    f.ber.textContent = Number(link.ber || 0).toFixed(4);
+    f.delay.textContent = `${(link.delay_ns || 0).toFixed(1)} ns`;
+    f.sync.textContent = link.synced ? (link.inverted ? "locked (inv)" : "locked") : "searching";
+    f.sync.style.color = link.synced ? "#10b981" : "#f59e0b";
   });
 }
 
@@ -341,6 +443,7 @@ function updateLinkPair(lid, txId, rxId) {
 
 if (emCanvas) {
   emCanvas.addEventListener("click", (e) => {
+    if (dragMoved) { dragMoved = false; return; }   // click that ended a drag
     if (!latestTelemetry) return;
     const rect = emCanvas.getBoundingClientRect();
     const cx = toMetersX(((e.clientX - rect.left) / rect.width) * fieldWidth);
@@ -389,6 +492,7 @@ if (emCanvas) {
     const cy = toMetersY(((e.clientY - rect.top) / rect.height) * fieldHeight);
 
     startMousePos = { x: e.clientX, y: e.clientY };
+    dragMoved = false;
 
     if (latestTelemetry.transmitters) {
       for (const tx of latestTelemetry.transmitters) {
@@ -432,6 +536,7 @@ if (emCanvas) {
     if (coordsEl) coordsEl.textContent = `Coords: (${cx.toFixed(2)} m, ${cy.toFixed(2)} m)`;
 
     if (isMouseDownOnCanvas) {
+      if (Math.hypot(e.clientX - startMousePos.x, e.clientY - startMousePos.y) > 5) dragMoved = true;
       if (draggedNode) {
         const d = Math.hypot(e.clientX - startMousePos.x, e.clientY - startMousePos.y);
         if (d > 5) {
@@ -454,49 +559,23 @@ if (emCanvas) {
       const endX = toMetersX(((e.clientX - rect.left) / rect.width) * fieldWidth);
       const endY = toMetersY(((e.clientY - rect.top) / rect.height) * fieldHeight);
 
-      const x_min = Math.min(boxStartCoord.x, endX);
-      const x_max = Math.max(boxStartCoord.x, endX);
-      const y_min = Math.min(boxStartCoord.y, endY);
-      const y_max = Math.max(boxStartCoord.y, endY);
-
-      if (
-      x_min < 0.0 ||
-      x_max > SIM_WIDTH ||
-      y_min < 0.0 ||
-      y_max > SIM_HEIGHT
-    ) {
-      return;
-    }
+      const clampX = (v) => Math.max(0, Math.min(SIM_WIDTH, v));
+      const clampY = (v) => Math.max(0, Math.min(SIM_HEIGHT, v));
+      const x_min = clampX(Math.min(boxStartCoord.x, endX));
+      const x_max = clampX(Math.max(boxStartCoord.x, endX));
+      const y_min = clampY(Math.min(boxStartCoord.y, endY));
+      const y_max = clampY(Math.max(boxStartCoord.y, endY));
 
       if (Math.abs(x_max - x_min) > 0.05 && Math.abs(y_max - y_min) > 0.05) {
         const matType = document.getElementById("materialSelect")?.value || "concrete";
-        let name = matType;
-        let perm = 15.0, mu = 1.0, cond = 0.0;
-
-        if (matType === "glass") {
-          perm = 4.0;
-        } else if (matType === "wood") {
-          perm = 2.0;
-        } else if (matType === "water") {
-          perm = 80.0;
-        } else if (matType === "custom") {
-          name = customMaterialConfig.name || "custom";
-          perm = customMaterialConfig.permittivity;
-          mu = customMaterialConfig.permeability;
-          cond = customMaterialConfig.conductivity;
+        const payload = { type: "add_material", name: matType, x_min, x_max, y_min, y_max };
+        if (matType === "custom") {
+          payload.name = customMaterialConfig.name || "custom";
+          payload.relative_permittivity = customMaterialConfig.permittivity;
+          payload.relative_permeability = customMaterialConfig.permeability;
+          payload.conductivity = customMaterialConfig.conductivity;
         }
-
-        safeSend({
-          type: "add_material",
-          name: name,
-          x_min: x_min,
-          x_max: x_max,
-          y_min: y_min,
-          y_max: y_max,
-          relative_permittivity: perm,
-          relative_permeability: mu,
-          conductivity: cond
-        });
+        safeSend(payload);
       }
     }
     isMouseDownOnCanvas = false;
@@ -612,7 +691,7 @@ function openNodeParameterPopup(type, id, mouseX, mouseY) {
   const currentFc = ((nodeData.fc || 1e9) / 1e9).toFixed(2);
   const currentRb = ((nodeData.rb || 500e6) / 1e6).toFixed(0);
   const currentAmp = type === "tx" ? (nodeData.amp || 2.0).toFixed(1) : null;
-  const currentWindowSize = 20.0;
+  const currentWindowSize = Math.round(nodeData.window_ns || 20);
 
   popup.innerHTML = `
     <div class="modal-header" id="paramHeader" style="background:#1e293b; padding:6px 10px; display:flex; justify-content:space-between; align-items:center; cursor:grab;">
@@ -659,9 +738,21 @@ function openNodeParameterPopup(type, id, mouseX, mouseY) {
   };
 
   // Robust function using the correct backend message type ("set_transmitter_params")
+  // Sliders fire continuously while dragging; each backend update redesigns
+  // filters / restarts loops, so send only once the slider settles.
+  let paramTimer = null;
   function sendNodeParams() {
+    clearTimeout(paramTimer);
+    paramTimer = setTimeout(sendNodeParamsNow, 150);
+  }
+
+  function sendNodeParamsNow() {
     const fcVal = parseFloat(popup.querySelector("#rangeFc").value) * 1e9;
     const rbVal = parseFloat(popup.querySelector("#rangeRb").value) * 1e6;
+    if (rbVal >= fcVal) {
+      showToast("Bit rate must be below the carrier frequency.");
+      return;
+    }
     
     if (type === "tx") {
       const ampEl = popup.querySelector("#rangeAmp");
@@ -758,15 +849,17 @@ function openScopeModal(type, id) {
     tabsHTML += `<div class="scope-tab ${i === 0 ? 'active' : ''}" data-key="${stg.key}" style="padding:7px 10px; font-size:11px; cursor:pointer; color:#94a3b8; flex:1; text-align:center; font-weight:600;">${stg.label}</div>`;
   });
 
-  let extraControlsHtml = "";
-  if (type === "obs") {
-    extraControlsHtml = `
+  const nodeNow = (type === "tx" ? latestTelemetry.transmitters
+                 : type === "rx" ? latestTelemetry.receivers
+                 : latestTelemetry.observation_points)?.find(n => n.id === id);
+  const winNow = Math.round(nodeNow?.window_ns || (type === "obs" ? 15 : 20));
+  const extraControlsHtml = `
       <div style="display:flex; align-items:center; gap:6px; font-size:11px; color:#94a3b8;">
         <span>Window (ns):</span>
-        <input type="number" id="obsWinInput_${id}" value="15" min="5" max="100" style="width:60px; padding:3px; font-size:11px; background:#101318; border:1px solid #2c2f37; color:#fff; border-radius:3px;">
+        <input type="number" id="winInput" value="${winNow}" min="2" max="500" style="width:70px; padding:3px; font-size:11px; background:#101318; border:1px solid #2c2f37; color:#fff; border-radius:3px;">
+        <span style="color:#64748b;">sets both trace &amp; FFT window</span>
       </div>
     `;
-  }
 
   let deleteBtnHtml = `<button class="danger" id="btnDeleteScopeNode" style="padding:5px 12px; font-size:10.5px;">Delete ${type.toUpperCase()}</button>`;
 
@@ -793,14 +886,15 @@ function openScopeModal(type, id) {
   const canvas = modal.querySelector("canvas");
   scopeData.ctx = canvas.getContext("2d");
 
-  if (type === "obs") {
-    const winInput = modal.querySelector(`#obsWinInput_${id}`);
-    if (winInput) {
-      winInput.onchange = (e) => {
-        const val = parseFloat(e.target.value) || 15.0;
-        safeSend({ type: "set_obs_window", oid: id, window_ns: val });
-      };
-    }
+  const winInput = modal.querySelector("#winInput");
+  if (winInput) {
+    winInput.onchange = (e) => {
+      const val = Math.min(500, Math.max(2, parseFloat(e.target.value) || 15));
+      e.target.value = val;
+      if (type === "obs") safeSend({ type: "set_obs_window", oid: id, window_ns: val });
+      else if (type === "tx") safeSend({ type: "set_transmitter_params", tx_id: id, window_ns: val });
+      else safeSend({ type: "set_receiver_params", rx_id: id, window_ns: val });
+    };
   }
 
   modal.querySelector("#btnDeleteScopeNode").onclick = () => {
@@ -839,24 +933,24 @@ function renderModalCanvas(scopeData) {
   if (scopeData.type === "tx") {
     const tx = latestTelemetry.transmitters?.find(t => t.id === scopeData.id);
     if (!tx) return;
-    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, tx.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false); return; }
+    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, tx.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false, tx.spectrum_df_hz, tx.spectrum_res_hz); return; }
     values = tx[scopeData.activeStage] || tx.bpsk || [];
   } else if (scopeData.type === "rx") {
     const rx = latestTelemetry.receivers?.find(r => r.id === scopeData.id);
     if (!rx) return;
-    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, rx.spectrum || latestTelemetry.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false); return; }
+    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, rx.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false, rx.spectrum_df_hz, rx.spectrum_res_hz); return; }
     values = rx[scopeData.activeStage] || rx.rx_raw || [];
   } else if (scopeData.type === "obs") {
     const op = latestTelemetry.observation_points?.find(o => o.id === scopeData.id);
     if (!op) return;
-    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, op.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false); return; }
+    if (scopeData.activeStage === "spectrum") { drawAdvancedPlot(ctx, op.spectrum, w, h, "Frequency (GHz)", "Amplitude", true, false, op.spectrum_df_hz, op.spectrum_res_hz); return; }
     values = op.waveform || op.buffered_values || op.samples || [];
   }
   
   drawAdvancedPlot(ctx, values, w, h, "Time (ns)", "Amplitude (V)", false, true);
 }
 
-function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum, isTimeDomain) {
+function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum, isTimeDomain, df, res) {
   const padLeft = 55, padBottom = 45, padTop = 15, padRight = 20;
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
@@ -911,7 +1005,9 @@ function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum, isTimeD
         // Total duration represented by the samples
         const totalTimeNs = values.length * dtSec * 1e9;
 
-        const timeNs = (i / 4) * totalTimeNs;
+        // The buffer is a sliding window ending "now": label absolute sim time.
+        const endNs = latestTelemetry?.time_ns ?? totalTimeNs;
+        const timeNs = endNs - totalTimeNs + (i / 4) * totalTimeNs;
 
         xValStr = `${timeNs.toFixed(1)} ns`;
       }
@@ -923,11 +1019,12 @@ function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum, isTimeD
         const dtSec = latestTelemetry?.dt || 2.832e-11;
 
         // Nyquist frequency = 1 / (2*dt)
-        const nyquistGHz = (1 / (2 * dtSec)) / 1e9;
+        // Backend sends bins up to 3 GHz only, so label from the bin spacing (df), not Nyquist.
+        const spanGHz = ((values.length - 1) * (df || 0)) / 1e9;
 
-        const freqGHz = (i / 4) * nyquistGHz;
+        const freqGHz = (i / 4) * spanGHz;
 
-        xValStr = `${freqGHz.toFixed(1)} GHz`;
+        xValStr = df ? `${freqGHz.toFixed(2)} GHz` : "";
       }
 
       ctx.textAlign = "center";
@@ -975,23 +1072,32 @@ function drawAdvancedPlot(ctx, values, w, h, xLabel, yLabel, isSpectrum, isTimeD
   if (isSpectrum) {
     ctx.fillStyle = "#facc15";
 
-    const barW = plotW / values.length;
+    // Bin k is centred on frequency k*df, so the first/last bins sit on the
+    // plot edges and the axis labels (0 .. (K-1)*df) match the bars exactly.
+    const step = plotW / Math.max(1, values.length - 1);
+    const barW = Math.max(1, Math.min(6, step * 0.9));
 
     values.forEach((v, i) => {
-      const normH = Math.max(
-        0,
-        Math.min(1, v / (maxVal || 1.0))
-      );
-
+      const normH = Math.max(0, Math.min(1, v / (maxVal || 1.0)));
       const barH = normH * plotH;
-
       ctx.fillRect(
-        padLeft + (i * barW),
+        padLeft + i * step - barW / 2,
         (padTop + plotH) - barH,
-        Math.max(1, barW - 1),
+        barW,
         barH
       );
     });
+
+    if (res) {
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "10px monospace";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "top";
+      ctx.fillText(
+        `resolution ${(res / 1e6).toFixed(1)} MHz (1/window = ${(1e9 / res).toFixed(0)} ns)`,
+        w - padRight - 4, padTop + 2
+      );
+    }
   }
 
   // -----------------------------
@@ -1115,11 +1221,16 @@ if (btnAddLinkEval) {
 const scenarioSelect = document.getElementById("scenarioSelect");
 if (scenarioSelect) {
   scenarioSelect.onchange = (e) => {
-    const val = e.target.value;
-    if (val === "los") {
-      safeSend({ type: "clear_walls" });
-    } else if (val === "concrete_wall") {
-      safeSend({ type: "add_material", name: "concrete", x_min: 4.8, x_max: 5.2, y_min: 2.0, y_max: 8.0 });
-    }
+    safeSend({ type: "load_scenario", name: e.target.value });
   };
 }
+
+const btnViewField = document.getElementById("btnViewField");
+const btnViewEnergy = document.getElementById("btnViewEnergy");
+function setViewMode(mode) {
+  safeSend({ type: "set_view_mode", mode });
+  if (btnViewField) btnViewField.classList.toggle("active", mode === "field");
+  if (btnViewEnergy) btnViewEnergy.classList.toggle("active", mode === "energy");
+}
+if (btnViewField) btnViewField.onclick = () => setViewMode("field");
+if (btnViewEnergy) btnViewEnergy.onclick = () => setViewMode("energy");

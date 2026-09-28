@@ -165,8 +165,8 @@
     <h1>2D FDTD Wave Propagation & SDR Transceiver Workbench</h1>
     <div class="header-controls">
       <select id="scenarioSelect" class="preset-select">
+        <option value="los" selected>Preset: Line-of-Sight (TX0 Only)</option>
         <option value="cochannel">Preset: Co-Channel Collision</option>
-        <option value="los">Preset: Line-of-Sight (TX1 Only)</option>
         <option value="adjacent">Preset: Adjacent Channel</option>
         <option value="concrete_wall">Preset: Center Concrete Barrier</option>
       </select>
@@ -244,8 +244,8 @@
         <div style="display:flex; flex-direction:column; gap:6px;">
           <label>Material:</label>
           <select id="materialSelect" class="preset-select" style="width:100%; padding:6px;">
-            <option value="concrete">Concrete (ε_r = 15)</option>
-            <option value="glass">Glass (ε_r = 4)</option>
+            <option value="concrete">Concrete (ε_r = 5)</option>
+            <option value="glass">Glass (ε_r = 6)</option>
             <option value="wood">Wood (ε_r = 2)</option>
             <option value="water">Water (ε_r = 80)</option>
             <option value="custom">Custom Material...</option>

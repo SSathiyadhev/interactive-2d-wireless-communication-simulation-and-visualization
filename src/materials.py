@@ -230,6 +230,17 @@ class Material:
                 properties["conductivity"]
             )
 
+            # Explicit values passed by the caller (e.g. from the UI)
+            # override the database defaults instead of being ignored.
+            if relative_permittivity is not None:
+                self.relative_permittivity = float(relative_permittivity)
+
+            if relative_permeability is not None:
+                self.relative_permeability = float(relative_permeability)
+
+            if conductivity is not None:
+                self.conductivity = float(conductivity)
+
         else:
 
             # ----------------------------------------------------------
