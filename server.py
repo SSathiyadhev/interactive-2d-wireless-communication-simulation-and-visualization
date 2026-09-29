@@ -56,6 +56,7 @@ class SimulationRuntime:
         self.width = 10.0
         self.height = 10.0
         self.dt_multiplier = 0.25
+        self.noise_level = 0.0
         self.steps_per_frame = 6
         self.target_fps = 60
         self.running = False
@@ -72,7 +73,7 @@ class SimulationRuntime:
         self.materials_list = []
         self._build()
 
-    def _build(self, res_x=None, res_y=None, dt_multiplier=None):
+    def _build(self, res_x=None, res_y=None, dt_multiplier=None, noise_level=None):
         if res_x is not None:
             self.resolution_x = max(100, int(res_x))
         if res_y is not None:
@@ -81,6 +82,9 @@ class SimulationRuntime:
             # > 1.0 violates the Courant condition and WaveSolver would raise
             # half-way through a rebuild, leaving the runtime inconsistent.
             self.dt_multiplier = min(1.0, max(0.01, float(dt_multiplier)))
+
+        if noise_level is not None:
+            self.noise_level = max(0.0, float(noise_level))
 
         self.space = SimulationSpace(
             width=self.width,
@@ -96,11 +100,11 @@ class SimulationRuntime:
         self.link_evaluators_dict.clear()
         self.materials_list.clear()
 
-        self.add_transmitter(0, 2.0, 5.0, fc=1.0e9, rb=200.0e6, amp=2.0)
-        self.add_receiver(0, 8.0, 5.0, bit_rate=200.0e6)
-        self.add_observation_point(3.0, 5.0, label="Grid Probe 0")
+        self.add_transmitter(0, 3.0, 5.0, fc=1.5e9, rb=400.0e6, amp=2.0)
+        self.add_receiver(0, 7.0, 5.0, fc=1.5e9, bit_rate=400.0e6)
+        self.add_observation_point(5.0, 3.0, label="Grid Probe 0")
 
-        self.wave_solver = WaveSolver(self.space, noise_level=0.0)
+        self.wave_solver = WaveSolver(self.space, noise_level=self.noise_level)
         self.space.set_running(True)
 
     def add_transmitter(self, tx_id, x, y, fc=1.0e9, rb=500.0e6, amp=2.0, window_duration=20e-9):
@@ -119,10 +123,10 @@ class SimulationRuntime:
             for lid in to_del:
                 del self.link_evaluators_dict[lid]
 
-    def add_receiver(self, rx_id, x, y, bit_rate=500.0e6, observation_window=20e-9):
+    def add_receiver(self, rx_id, x, y, fc=1.0e9, bit_rate=500.0e6, observation_window=20e-9):
         rx = Receiver(
             self.space, x=float(x), y=float(y),
-            tuned_frequency=1.0e9, bit_rate=float(bit_rate), observation_window=float(observation_window),
+            tuned_frequency=float(fc), bit_rate=float(bit_rate), observation_window=float(observation_window),
             fft_window=float(observation_window),
         )
         self.receivers[rx_id] = rx
@@ -139,7 +143,7 @@ class SimulationRuntime:
         self.next_obs_id += 1
         op = ObservationPoint(
             self.space, x=float(x), y=float(y),
-            buffer_duration=15e-9, label=label or f"Obs Point {oid}"
+            buffer_duration=20e-9, label=label or f"Obs Point {oid}"
         )
         self.observation_points[oid] = op
         return oid
@@ -474,14 +478,29 @@ def handle_control_message(message: dict):
             w = max(100, int(message.get("width", runtime.resolution_x)))
             h = max(100, int(message.get("height", runtime.resolution_y)))
             dt_mult = float(message.get("dt_multiplier", runtime.dt_multiplier))
+            noise_level = max(
+                0.0,
+                float(message.get("noise_level", runtime.noise_level))
+            )
+
             runtime.running = False
-            runtime._build(res_x=w, res_y=h, dt_multiplier=dt_mult)
+
+            runtime._build(
+                res_x=w,
+                res_y=h,
+                dt_multiplier=dt_mult,
+                noise_level=noise_level
+            )
         elif msg_type == "load_scenario":
             runtime.load_scenario(message.get("name", "los"))
         elif msg_type == "set_view_mode":
             runtime.view_mode = message.get("mode", "field")
         elif msg_type == "set_noise":
-            runtime.wave_solver.set_noise_level(max(0.0, float(message.get("level", 0.0))))
+            runtime.noise_level = max(
+                0.0,
+                float(message.get("level", 0.0))
+            )
+            runtime.wave_solver.set_noise_level(runtime.noise_level)
 
         # ---------------- transmitters ----------------
         elif msg_type == "add_transmitter":

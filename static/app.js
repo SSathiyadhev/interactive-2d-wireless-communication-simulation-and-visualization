@@ -1175,9 +1175,27 @@ if (btnClearWallsAlt) btnClearWallsAlt.onclick = () => safeSend({ type: "clear_w
 const applyConfigBtn = document.getElementById("applyConfigBtn");
 if (applyConfigBtn) {
   applyConfigBtn.onclick = () => {
-    const res = Math.max(100, parseInt(document.getElementById("resolutionInput")?.value) || 1000);
-    const dtMult = parseFloat(document.getElementById("dtMultiplierInput")?.value) || 0.25;
-    safeSend({ type: "set_resolution", width: res, height: res, dt_multiplier: dtMult });
+    const res = Math.max(
+      100,
+      parseInt(document.getElementById("resolutionInput")?.value) || 1000
+    );
+
+    const dtMult = parseFloat(
+      document.getElementById("dtMultiplierInput")?.value
+    ) || 0.25;
+
+    const noiseLevel = Math.max(
+      0,
+      parseFloat(document.getElementById("noiseLevelInput")?.value) || 0.0
+    );
+
+    safeSend({
+      type: "set_resolution",
+      width: res,
+      height: res,
+      dt_multiplier: dtMult,
+      noise_level: noiseLevel
+    });
   };
 }
 

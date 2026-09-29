@@ -214,7 +214,7 @@ class Receiver:
             0.5
             * self.bit_rate
             * (1.0 + self.rrc_rolloff)
-            * 1.10
+            * 1.5
         )
 
         self.bandpass_filter.set_parameters(

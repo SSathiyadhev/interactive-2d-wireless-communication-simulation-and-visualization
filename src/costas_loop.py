@@ -15,7 +15,7 @@ class CostasLoop:
         carrier_frequency,
         bit_rate,
         rrc_rolloff=0.35,
-        loop_bandwidth_ratio=0.05,  # 1% of bit rate for stable lock
+        loop_bandwidth_ratio=0.06,  # 5% of bit rate for stable lock
         damping_factor=0.707,
     ):
         self.dt = float(dt)
@@ -103,4 +103,4 @@ class CostasLoop:
         self.phase %= (2.0 * np.pi)
 
         # Return the in-phase baseband (or mixer output) and phase
-        return i_mixed, self.phase
+        return i, self.phase
