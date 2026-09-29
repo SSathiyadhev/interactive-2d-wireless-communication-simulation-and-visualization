@@ -49,8 +49,8 @@ def validate_link_params(fc, rb):
         )
 
 PRESETS = {
-    "los": {
-        "name": "Line-of-Sight",
+    "single_link_line_of_sight": {
+        "name": "Single Link (Line of Sight)",
 
         "noise_level": 0.0,
 
@@ -94,6 +94,169 @@ PRESETS = {
 
         "materials": [],
     },
+        "dual_link_line_of_sight": {
+        "name": "Dual Link (Line of Sight)",
+        "noise_level": 0.0,
+
+        "transmitters": [
+            {
+                "id": 0,
+                "x": 3.0,
+                "y": 4.0,
+                "fc": 1.5e9,
+                "rb": 400.0e6,
+                "amp": 2.0,
+                "window_duration": 20e-9,
+            },
+            {
+                "id": 1,
+                "x": 3.5,
+                "y": 6.0,
+                "fc": 1.0e9,
+                "rb": 300.0e6,
+                "amp": 2.0,
+                "window_duration": 20e-9,
+            },
+        ],
+
+        "receivers": [
+            {
+                "id": 0,
+                "x": 7.0,
+                "y": 4.0,
+                "fc": 1.5e9,
+                "bit_rate": 400.0e6,
+                "observation_window": 20e-9,
+            },
+            {
+                "id": 1,
+                "x": 6.0,
+                "y": 6.0,
+                "fc": 1.0e9,
+                "bit_rate": 300.0e6,
+                "observation_window": 20e-9,
+            },
+        ],
+
+        "observation_points": [
+            {
+                "x": 5.0,
+                "y": 4.75,
+                "label": "Grid Probe 0",
+            }
+        ],
+
+        "link_evaluators": [
+            {
+                "tx_id": 0,
+                "rx_id": 0,
+            },
+            {
+                "tx_id": 1,
+                "rx_id": 1,
+            },
+        ],
+
+        "materials": [],
+    },
+        "single_link_with_noise": {
+        "name": "Single Link (With Noise)",
+
+        "noise_level": 0.01,
+
+        "transmitters": [
+            {
+                "id": 0,
+                "x": 3.0,
+                "y": 5.0,
+                "fc": 1.5e9,
+                "rb": 400.0e6,
+                "amp": 2.0,
+                "window_duration": 20e-9,
+            }
+        ],
+
+        "receivers": [
+            {
+                "id": 0,
+                "x": 7.0,
+                "y": 5.0,
+                "fc": 1.5e9,
+                "bit_rate": 400.0e6,
+                "observation_window": 20e-9,
+            }
+        ],
+
+        "observation_points": [
+            {
+                "x": 5.0,
+                "y": 3.0,
+                "label": "Grid Probe 0",
+            }
+        ],
+
+        "link_evaluators": [
+            {
+                "tx_id": 0,
+                "rx_id": 0,
+            }
+        ],
+
+        "materials": [],
+    },
+        "single_link_with_concrete": {
+        "name": "Single Link (Concrete Obstacle)",
+
+        "noise_level": 0.0,
+
+        "transmitters": [
+            {
+                "id": 0,
+                "x": 3.0,
+                "y": 5.0,
+                "fc": 1.5e9,
+                "rb": 400.0e6,
+                "amp": 2.0,
+                "window_duration": 20e-9,
+            }
+        ],
+
+        "receivers": [
+            {
+                "id": 0,
+                "x": 7.0,
+                "y": 5.0,
+                "fc": 1.5e9,
+                "bit_rate": 400.0e6,
+                "observation_window": 20e-9,
+            }
+        ],
+
+        "observation_points": [
+            {
+                "x": 5.0,
+                "y": 1.5,
+                "label": "Grid Probe 0",
+            }
+        ],
+
+        "link_evaluators": [
+            {
+                "tx_id": 0,
+                "rx_id": 0,
+            }
+        ],
+
+        "materials": [
+            {
+                "name": "concrete",
+                "x_min": 4.7,
+                "x_max": 5.3,
+                "y_min": 2.5,
+                "y_max": 7.5,
+            }
+        ],
+    },
         "empty": {
         "name": "Empty Canvas",
         "noise_level": 0.0,
@@ -129,7 +292,7 @@ class SimulationRuntime:
 
         self.materials_list = []
 
-        self.current_preset = "los"
+        self.current_preset = "single_link_line_of_sight"
 
         self._build(preset=self.current_preset)
 

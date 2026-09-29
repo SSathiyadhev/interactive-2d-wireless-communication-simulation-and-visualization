@@ -15,7 +15,7 @@ class CostasLoop:
         carrier_frequency,
         bit_rate,
         rrc_rolloff=0.35,
-        loop_bandwidth_ratio=0.06,  # 5% of bit rate for stable lock
+        loop_bandwidth_ratio=0.05,  # 5% of bit rate for stable lock
         damping_factor=0.707,
     ):
         self.dt = float(dt)
