@@ -48,6 +48,63 @@ def validate_link_params(fc, rb):
             f"frequency ({fc / 1e9:.2f} GHz)."
         )
 
+PRESETS = {
+    "los": {
+        "name": "Line-of-Sight",
+
+        "noise_level": 0.0,
+
+        "transmitters": [
+            {
+                "id": 0,
+                "x": 3.0,
+                "y": 5.0,
+                "fc": 1.5e9,
+                "rb": 400.0e6,
+                "amp": 2.0,
+                "window_duration": 20e-9,
+            }
+        ],
+
+        "receivers": [
+            {
+                "id": 0,
+                "x": 7.0,
+                "y": 5.0,
+                "fc": 1.5e9,
+                "bit_rate": 400.0e6,
+                "observation_window": 20e-9,
+            }
+        ],
+
+        "observation_points": [
+            {
+                "x": 5.0,
+                "y": 3.0,
+                "label": "Grid Probe 0",
+            }
+        ],
+
+        "link_evaluators": [
+            {
+                "tx_id": 0,
+                "rx_id": 0,
+            }
+        ],
+
+        "materials": [],
+    },
+        "empty": {
+        "name": "Empty Canvas",
+        "noise_level": 0.0,
+
+        "transmitters": [],
+        "receivers": [],
+        "observation_points": [],
+        "link_evaluators": [],
+        "materials": [],
+    },
+}
 
 class SimulationRuntime:
     def __init__(self):
@@ -71,20 +128,47 @@ class SimulationRuntime:
         self.next_link_eval_id = 0
 
         self.materials_list = []
-        self._build()
 
-    def _build(self, res_x=None, res_y=None, dt_multiplier=None, noise_level=None):
+        self.current_preset = "los"
+
+        self._build(preset=self.current_preset)
+
+    def _build(
+        self,
+        res_x=None,
+        res_y=None,
+        dt_multiplier=None,
+        noise_level=None,
+        preset=None,
+    ):
         if res_x is not None:
             self.resolution_x = max(100, int(res_x))
+
         if res_y is not None:
             self.resolution_y = max(100, int(res_y))
+
         if dt_multiplier is not None:
-            # > 1.0 violates the Courant condition and WaveSolver would raise
-            # half-way through a rebuild, leaving the runtime inconsistent.
+            # > 1.0 violates the Courant condition.
             self.dt_multiplier = min(1.0, max(0.01, float(dt_multiplier)))
 
+        # If a preset was explicitly supplied, use it.
+        # Otherwise keep the currently selected preset.
+        if preset is not None:
+            if preset not in PRESETS:
+                raise ValueError(f"Unknown preset '{preset}'.")
+            self.current_preset = preset
+
+        config = PRESETS[self.current_preset]
+
+        # Preset provides the default noise.
+        # An explicitly supplied noise_level overrides the preset.
         if noise_level is not None:
             self.noise_level = max(0.0, float(noise_level))
+        else:
+            self.noise_level = max(
+                0.0,
+                float(config.get("noise_level", 0.0))
+            )
 
         self.space = SimulationSpace(
             width=self.width,
@@ -100,11 +184,66 @@ class SimulationRuntime:
         self.link_evaluators_dict.clear()
         self.materials_list.clear()
 
-        self.add_transmitter(0, 3.0, 5.0, fc=1.5e9, rb=400.0e6, amp=2.0)
-        self.add_receiver(0, 7.0, 5.0, fc=1.5e9, bit_rate=400.0e6)
-        self.add_observation_point(5.0, 3.0, label="Grid Probe 0")
+        self.next_obs_id = 0
+        self.next_link_eval_id = 0
 
-        self.wave_solver = WaveSolver(self.space, noise_level=self.noise_level)
+        # ---------------------------------------------------------
+        # TRANSMITTERS
+        # ---------------------------------------------------------
+        for tx_config in config.get("transmitters", []):
+            tx_config = dict(tx_config)
+            tx_id = tx_config.pop("id")
+
+            self.add_transmitter(
+                tx_id=tx_id,
+                **tx_config
+            )
+
+        # ---------------------------------------------------------
+        # RECEIVERS
+        # ---------------------------------------------------------
+        for rx_config in config.get("receivers", []):
+            rx_config = dict(rx_config)
+            rx_id = rx_config.pop("id")
+
+            self.add_receiver(
+                rx_id=rx_id,
+                **rx_config
+            )
+
+        # ---------------------------------------------------------
+        # OBSERVATION POINTS
+        # ---------------------------------------------------------
+        for obs_config in config.get("observation_points", []):
+            self.add_observation_point(**obs_config)
+
+        # ---------------------------------------------------------
+        # WAVE SOLVER
+        # ---------------------------------------------------------
+        self.wave_solver = WaveSolver(
+            self.space,
+            noise_level=self.noise_level,
+        )
+
+        # ---------------------------------------------------------
+        # MATERIALS
+        # ---------------------------------------------------------
+        for material_config in config.get("materials", []):
+            self.add_material(
+                **material_config,
+                refresh=False,
+            )
+
+        # Refresh only once after all materials are applied.
+        if config.get("materials"):
+            self.wave_solver.refresh()
+
+        # ---------------------------------------------------------
+        # LINK EVALUATORS
+        # ---------------------------------------------------------
+        for link_config in config.get("link_evaluators", []):
+            self.add_link_evaluator(**link_config)
+
         self.space.set_running(True)
 
     def add_transmitter(self, tx_id, x, y, fc=1.0e9, rb=500.0e6, amp=2.0, window_duration=20e-9):
@@ -162,23 +301,13 @@ class SimulationRuntime:
                 data["evaluator"].reset()
 
     def load_scenario(self, name):
-        """Rebuild the environment for one of the UI presets."""
-        if name not in ("los", "cochannel", "adjacent", "concrete_wall"):
-            raise ValueError(f"Unknown scenario '{name}'.")
+        """Load and build a preset from PRESETS."""
+
+        if name not in PRESETS:
+            raise ValueError(f"Unknown preset '{name}'.")
 
         self.running = False
-        self._build()  # TX0 (2,5) -> RX0 (8,5), 1 GHz, 200 Mbps, one probe
-
-        if name == "cochannel":
-            # Interferer on the same carrier as TX0.
-            self.add_transmitter(1, 2.0, 8.0, fc=1.0e9, rb=200.0e6, amp=2.0)
-        elif name == "adjacent":
-            # Interferer on a neighbouring channel.
-            self.add_transmitter(1, 2.0, 8.0, fc=1.3e9, rb=200.0e6, amp=2.0)
-        elif name == "concrete_wall":
-            self.add_material("concrete", 4.8, 5.2, 2.0, 8.0)
-
-        self.add_link_evaluator(0, 0)
+        self._build(preset=name)
 
     def add_link_evaluator(self, tx_id, rx_id):
         lid = self.next_link_eval_id
@@ -424,6 +553,14 @@ class SimulationRuntime:
                 "inverted": bool(ev.inverted) if ev else False,
             })
 
+        preset_list = [
+            {
+                "id": preset_id,
+                "name": config.get("name", preset_id),
+            }
+            for preset_id, config in PRESETS.items()
+        ]
+
         return {
             "type": "telemetry",
             "running": self.running,
@@ -444,6 +581,8 @@ class SimulationRuntime:
             "materials": self.materials_list,
             "view_mode": self.view_mode,
             "noise_level": self.wave_solver.get_noise_level(),
+            "presets": preset_list,
+            "current_preset": self.current_preset,
         }
 
 

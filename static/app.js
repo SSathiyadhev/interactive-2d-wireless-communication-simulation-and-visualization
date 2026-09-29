@@ -70,6 +70,7 @@ ws.onmessage = (event) => {
       return;
     }
     latestTelemetry = data;
+    updatePresetSelector(data);
 
   if (data.grid_width && data.grid_height) {
     if (data.grid_width !== fieldWidth || data.grid_height !== fieldHeight) {
@@ -1237,9 +1238,45 @@ if (btnAddLinkEval) {
 }
 
 const scenarioSelect = document.getElementById("scenarioSelect");
+
+function updatePresetSelector(data) {
+    if (!scenarioSelect || !data?.presets) return;
+
+    const currentValue = data.current_preset;
+
+    // Build a stable signature of the available presets.
+    const presetSignature = data.presets
+        .map((preset) => `${preset.id}:${preset.name}`)
+        .join("|");
+
+    // Only rebuild the <select> when the preset list itself changes.
+    if (scenarioSelect.dataset.presetSignature !== presetSignature) {
+        scenarioSelect.textContent = "";
+
+        data.presets.forEach((preset) => {
+            const option = document.createElement("option");
+
+            option.value = preset.id;
+            option.textContent = `Preset: ${preset.name}`;
+
+            scenarioSelect.appendChild(option);
+        });
+
+        scenarioSelect.dataset.presetSignature = presetSignature;
+    }
+
+    // Only change the selected value when it actually differs.
+    if (scenarioSelect.value !== currentValue) {
+        scenarioSelect.value = currentValue;
+    }
+}
+
 if (scenarioSelect) {
   scenarioSelect.onchange = (e) => {
-    safeSend({ type: "load_scenario", name: e.target.value });
+    safeSend({
+      type: "load_scenario",
+      name: e.target.value
+    });
   };
 }
 
