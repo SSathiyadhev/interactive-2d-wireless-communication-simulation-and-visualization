@@ -663,6 +663,7 @@ class SimulationRuntime:
                 "rx_raw": list(r.get_received_values()),
                 "rx_bpf": list(r.get_filtered_values()),
                 "rx_mixed": list(r.get_mixed_values()),
+                "rx_costas_i": list(r.get_costas_i_values()),
                 "rx_matched": list(r.get_baseband_values()),
                 "rx_bits": list(r.get_bit_values()) if hasattr(r, "get_bit_values") else [],
                 "spectrum": rx_fft_spec

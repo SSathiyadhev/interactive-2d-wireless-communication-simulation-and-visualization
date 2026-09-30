@@ -62,12 +62,13 @@ class Receiver:
         )
 
         # Rolling sample-rate buffers (for oscilloscope UI visualization)
-        self.time_values = deque(maxlen=max_samples)
         self.received_values = deque(maxlen=max_samples)
         self.filtered_values = deque(maxlen=max_samples)
         self.mixed_values = deque(maxlen=max_samples)
+        self.costas_i_values = deque(maxlen=max_samples)
         self.baseband_values = deque(maxlen=max_samples)
         self.bit_values = deque(maxlen=max_samples)
+        self.time_values = deque(maxlen=max_samples)
 
         # Currently decoded bit
         self.current_bit = None
@@ -178,7 +179,7 @@ class Receiver:
         )
 
         # Carrier recovery / downconversion
-        mixed_value, _ = self.costas_loop.process(
+        mixed_value, costas_i, _ = self.costas_loop.process(
             filtered_value,
             current_time,
         )
@@ -187,9 +188,13 @@ class Receiver:
             mixed_value
         )
 
+        self.costas_i_values.append(
+            costas_i
+        )
+
         # RRC matched filter
         baseband_value = self._matched_filter_stage(
-            mixed_value
+            costas_i
         )
 
         # Gardner symbol timing recovery
@@ -382,12 +387,13 @@ class Receiver:
             ),
         )
 
-        self.time_values = deque(maxlen=max_samples)
         self.received_values = deque(maxlen=max_samples)
         self.filtered_values = deque(maxlen=max_samples)
         self.mixed_values = deque(maxlen=max_samples)
+        self.costas_i_values = deque(maxlen=max_samples)
         self.baseband_values = deque(maxlen=max_samples)
         self.bit_values = deque(maxlen=max_samples)
+        self.time_values = deque(maxlen=max_samples)
 
     def set_fft_window(self, fft_window):
         fft_window = float(fft_window)
@@ -427,6 +433,9 @@ class Receiver:
 
     def get_mixed_values(self):
         return list(self.mixed_values)
+
+    def get_costas_i_values(self):
+        return list(self.costas_i_values)
 
     def get_demodulated_bits(self):
         return self.demodulated_bits

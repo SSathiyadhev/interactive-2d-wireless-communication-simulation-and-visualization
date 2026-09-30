@@ -830,7 +830,8 @@ function openScopeModal(type, id) {
     stages = [
       { key: "rx_raw", label: "Antenna" },
       { key: "rx_bpf", label: "BP Filter" },
-      { key: "rx_mixed", label: "Mixer Out" },
+      { key: "rx_mixed", label: "Mixed" },
+      { key: "rx_costas_i", label: "Filtered Mixed" },
       { key: "rx_matched", label: "Matched" },
       { key: "rx_bits", label: "Bits" },
       { key: "spectrum", label: "FFT Spectrum" }

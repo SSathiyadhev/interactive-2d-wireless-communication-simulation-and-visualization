@@ -103,4 +103,4 @@ class CostasLoop:
         self.phase %= (2.0 * np.pi)
 
         # Return the in-phase baseband (or mixer output) and phase
-        return i, self.phase
+        return i_mixed, i, self.phase
