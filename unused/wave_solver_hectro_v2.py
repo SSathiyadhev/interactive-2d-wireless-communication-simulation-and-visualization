@@ -111,7 +111,7 @@ def _fdtd_step(
 
     if noise_level > 0.0:
 
-        for i in range(1, rows - 1):
+        for i in prange(1, rows - 1):
 
             for j in range(1, cols - 1):
 
@@ -597,4 +597,3 @@ class WaveSolver:
         """
 
         self._refresh_coefficients()
-    
