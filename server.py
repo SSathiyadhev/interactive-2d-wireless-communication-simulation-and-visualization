@@ -277,8 +277,8 @@ class SimulationRuntime:
         self.height = 10.0
         self.dt_multiplier = 0.25
         self.noise_level = 0.0
-        self.steps_per_frame = 6
-        self.target_fps = 60
+        self.steps_per_frame = 5
+        self.target_fps = 30
         self.running = False
         self.view_mode = "field"
 

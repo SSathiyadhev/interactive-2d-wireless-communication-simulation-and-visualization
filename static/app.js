@@ -1166,7 +1166,12 @@ const btnPause = document.getElementById("btnPause");
 if (btnPause) btnPause.onclick = () => safeSend({ type: "pause" });
 
 const btnReset = document.getElementById("btnReset");
-if (btnReset) btnReset.onclick = () => safeSend({ type: "reset" });
+if (btnReset) {
+  btnReset.onclick = () => {
+    lastPreset = null;
+    safeSend({ type: "reset" });
+  };
+}
 
 const btnClearWalls = document.getElementById("btnClearWalls");
 if (btnClearWalls) btnClearWalls.onclick = () => safeSend({ type: "clear_walls" });
@@ -1238,12 +1243,25 @@ if (btnAddLinkEval) {
   };
 }
 
-const scenarioSelect = document.getElementById("scenarioSelect");
+let lastPreset = null;
 
 function updatePresetSelector(data) {
-    if (!scenarioSelect || !data?.presets) return;
+    if (!data) return;
 
     const currentValue = data.current_preset;
+
+    // Update noise input only when the preset changes.
+    if (currentValue !== lastPreset) {
+        const noiseInput = document.getElementById("noiseLevelInput");
+
+        if (noiseInput && data.noise_level !== undefined) {
+            noiseInput.value = data.noise_level;
+        }
+
+        lastPreset = currentValue;
+    }
+
+    if (!scenarioSelect || !data.presets) return;
 
     // Build a stable signature of the available presets.
     const presetSignature = data.presets
@@ -1266,7 +1284,6 @@ function updatePresetSelector(data) {
         scenarioSelect.dataset.presetSignature = presetSignature;
     }
 
-    // Only change the selected value when it actually differs.
     if (scenarioSelect.value !== currentValue) {
         scenarioSelect.value = currentValue;
     }
